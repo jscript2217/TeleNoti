@@ -19,6 +19,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "telegramalramrelay"
+rootProject.name = "TeleNoti"
 include(":app")
  
