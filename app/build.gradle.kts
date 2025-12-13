@@ -5,11 +5,11 @@ plugins {
 }
 
 android {
-    namespace = "com.example.telegramalramrelay"
+    namespace = "com.jscript.telenoti"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.example.telegramalramrelay"
+        applicationId = "com.jscript.telenoti"
         minSdk = 24
         targetSdk = 33
         versionCode = 1
