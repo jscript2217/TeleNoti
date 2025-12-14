@@ -28,10 +28,10 @@
             android:supportsRtl="true"
             android:theme="@style/Theme.TeleNoti">
         <activity
-                android:name="com.jscript.telenoti.MainActivity"
-                android:exported="true"
-                android:label="@string/app_name"
-                android:theme="@style/Theme.TeleNoti">
+            android:name="com.jscript.telenoti.MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:theme="@style/Theme.TeleNoti">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
 

@@ -71,7 +71,7 @@ export function FormatSettings() {
         <div className="w-16 h-16 bg-purple-600 rounded-2xl mx-auto flex items-center justify-center">
           <FileText className="text-white" size={32} />
         </div>
-        <h1 className="text-gray-900">알림 포맷 설정</h1>
+        <h1 className="text-gray-900">알림 형식 설정</h1>
         <p className="text-gray-500 text-sm">텔레그램으로 전송될 메시지 형식 설정</p>
       </div>
 
@@ -95,7 +95,7 @@ export function FormatSettings() {
       {/* Format Editor */}
       <div className="bg-white rounded-2xl shadow-md p-5 space-y-4">
         <div className="flex items-center justify-between">
-          <h3 className="text-gray-900 text-sm">메시지 포맷</h3>
+          <h3 className="text-gray-900 text-sm">메시지 형식</h3>
           <button
             onClick={resetFormat}
             className="flex items-center gap-1 px-3 py-1.5 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors text-xs text-gray-700"
@@ -107,7 +107,7 @@ export function FormatSettings() {
         <textarea
           value={format}
           onChange={(e) => setFormat(e.target.value)}
-          placeholder="메시지 포맷을 입력하세요..."
+          placeholder="메시지 형식을 입력하세요..."
           className="w-full px-4 py-3 bg-gray-50 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm min-h-[120px] font-mono"
         />
         <p className="text-gray-400 text-xs">
@@ -195,7 +195,7 @@ export function FormatSettings() {
 
       {/* Save Button */}
       <button className="w-full py-4 bg-purple-600 hover:bg-purple-700 text-white rounded-xl transition-colors shadow-md">
-        포맷 저장
+        형식 저장
       </button>
     </div>
   );
