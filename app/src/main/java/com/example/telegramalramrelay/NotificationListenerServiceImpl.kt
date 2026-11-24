@@ -1,129 +1,288 @@
 package com.example.telegramalramrelay
 
 import android.app.Notification
-import android.app.Notification.EXTRA_TEXT
-import android.app.Notification.EXTRA_TITLE
-import android.content.Context
+import android.content.ComponentName
+import android.os.Build
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
-import android.util.Log
+import com.example.telegramalramrelay.data.DeliveryStatus
+import com.example.telegramalramrelay.data.NotificationLogItem
+import com.example.telegramalramrelay.data.PendingImageStore
+import com.example.telegramalramrelay.data.SettingsRepository
+import com.example.telegramalramrelay.domain.ExtractedImageSources
+import com.example.telegramalramrelay.domain.FilterDecision
+import com.example.telegramalramrelay.domain.MessageFormatter
+import com.example.telegramalramrelay.domain.NotificationCandidate
+import com.example.telegramalramrelay.domain.NotificationDeduplicator
+import com.example.telegramalramrelay.domain.NotificationFilter
+import com.example.telegramalramrelay.domain.NotificationImageExtractor
+import com.example.telegramalramrelay.domain.NotificationReplyExtractor
+import com.example.telegramalramrelay.domain.NotificationTextExtractor
+import com.example.telegramalramrelay.domain.ReplyActionStore
+import com.example.telegramalramrelay.domain.ReplyTarget
+import com.example.telegramalramrelay.domain.SmsMmsEnricher
+import com.example.telegramalramrelay.network.TelegramApi
+import com.example.telegramalramrelay.network.TelegramReplyPoller
+import com.example.telegramalramrelay.worker.RetryDeliveryWorker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import org.json.JSONArray
-import org.json.JSONObject
-import android.content.Intent
-import com.example.telegramalramrelay.network.TelegramApi
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
+import java.util.UUID
 
 class NotificationListenerServiceImpl : NotificationListenerService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val deduplicator = NotificationDeduplicator()
 
     companion object {
-        // No diagnostic logging or dedupe here per user's request
+        private val _isConnected = MutableStateFlow(false)
+        val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
     }
 
-    override fun onNotificationPosted(sbn: StatusBarNotification) {
+    override fun onListenerConnected() {
+        super.onListenerConnected()
+        _isConnected.value = true
+        TelegramReplyPoller.syncState(applicationContext)
+    }
+
+    override fun onListenerDisconnected() {
+        _isConnected.value = false
+        super.onListenerDisconnected()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            try {
+                requestRebind(ComponentName(this, NotificationListenerServiceImpl::class.java))
+            } catch (_: Exception) {}
+        }
+    }
+
+    override fun onDestroy() {
+        _isConnected.value = false
+        scope.cancel()
+        super.onDestroy()
+    }
+
+    override fun onNotificationPosted(sbn: StatusBarNotification?) {
+        if (sbn == null) return
         try {
             val pkg = sbn.packageName ?: return
+            val repo = SettingsRepository.getInstance(applicationContext)
+            repo.recordObservedPackage(pkg)
+            repo.checkAndApplyDailyResetIfDue()
+            val settings = repo.currentSettings()
 
-            val prefs = getSharedPreferences("settings", Context.MODE_PRIVATE)
-            val forwarding = prefs.getBoolean("forwardingEnabled", true)
-            if (!forwarding) return
-
-            val selectedJson = prefs.getString("selected_apps", null)
-            if (!selectedJson.isNullOrEmpty()) {
-                val arr = JSONArray(selectedJson)
-                var selected = false
-                for (i in 0 until arr.length()) if (arr.getString(i) == pkg) { selected = true; break }
-                if (!selected) return
+            val extracted = NotificationTextExtractor.extractFromNotification(
+                context = applicationContext,
+                packageName = pkg,
+                notification = sbn.notification
+            )
+            val imageSources = if (settings.imageForwardingEnabled) {
+                NotificationImageExtractor.extractImageSources(sbn.notification)
             } else {
-                // no selected apps -> nothing to forward
-                return
+                ExtractedImageSources()
+            }
+            val replyAction = NotificationReplyExtractor.extractReplyAction(sbn.notification)
+            val notifKey = sbn.key ?: "$pkg:${sbn.id}"
+            val candidateText = if (imageSources.hasAnySource && extracted.text.isBlank()) {
+                "[이미지]"
+            } else {
+                extracted.text
             }
 
-            val botToken = prefs.getString("botToken", null) ?: return
-            val chatId = prefs.getString("chatId", null) ?: return
+            val flags = sbn.notification.flags
+            val isGroupSummary = (flags and Notification.FLAG_GROUP_SUMMARY) != 0
+            val isOngoing = (flags and Notification.FLAG_ONGOING_EVENT) != 0
+            val postTime = sbn.postTime.takeIf { it > 0L } ?: System.currentTimeMillis()
 
-            val extras = sbn.notification.extras
-            val titleCs = extras.getCharSequence(EXTRA_TITLE)
-            val title = titleCs?.toString()?.takeIf { it.isNotBlank() } ?: sbn.packageName
-            val textCs = extras.getCharSequence(EXTRA_TEXT)
-            val text = textCs?.toString()?.takeIf { it.isNotBlank() } ?: "(no text)"
+            val candidate = NotificationCandidate(
+                packageName = pkg,
+                title = extracted.title,
+                text = candidateText,
+                isGroupSummary = isGroupSummary,
+                isOngoing = isOngoing,
+                timestampMillis = postTime
+            )
 
-            // Ignore noisy fallback notifications that only carry package name and no text
-            if (title == pkg && (text == "(no text)" || text.isBlank())) return
+            val cal = Calendar.getInstance()
+            val decision = NotificationFilter.evaluate(
+                candidate = candidate,
+                settings = settings,
+                selfPackageName = packageName,
+                currentHour = cal.get(Calendar.HOUR_OF_DAY),
+                currentMinute = cal.get(Calendar.MINUTE)
+            )
+            if (decision is FilterDecision.Reject) return
 
-            val fmt = prefs.getString("message_format", "📱 {app}\n📌 {title}\n💬 {text}\n🕐 {time}") ?: "📱 {app}\n📌 {title}\n💬 {text}\n🕐 {time}"
+            val nowMillis = System.currentTimeMillis()
+            val allowedByDedupe = deduplicator.shouldAllow(
+                packageName = pkg,
+                title = extracted.title,
+                text = candidateText,
+                nowMillis = nowMillis,
+                windowMillis = settings.dedupeWindowSeconds * 1000L
+            )
+            if (!allowedByDedupe) return
+
+            val customRule = settings.appCustomRules[pkg]
+            val targetChatId = customRule?.customChatId?.takeIf { it.isNotBlank() } ?: settings.chatId
+            val template = customRule?.customFormat?.takeIf { it.isNotBlank() } ?: settings.messageFormat
+
+            if (settings.botToken.isBlank() || targetChatId.isBlank()) return
 
             val appName = try {
                 val ai = packageManager.getApplicationInfo(pkg, 0)
                 packageManager.getApplicationLabel(ai).toString()
-            } catch (t: Throwable) {
+            } catch (_: Throwable) {
                 pkg
             }
 
             val timeStr = try {
-                val sdf = java.text.SimpleDateFormat("yy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
-                sdf.format(java.util.Date(sbn.postTime))
-            } catch (t: Throwable) {
-                "${sbn.postTime}"
+                val sdf = SimpleDateFormat("yy-MM-dd HH:mm:ss", Locale.getDefault())
+                sdf.format(Date(postTime))
+            } catch (_: Throwable) {
+                postTime.toString()
             }
 
-            val message = fmt
-                .replace("{app}", appName)
-                .replace("{title}", title)
-                .replace("{text}", text)
-                .replace("{time}", timeStr)
-                .replace("{package}", pkg)
+            val botToken = settings.botToken
+            val shouldEnrichLms = settings.lmsEnrichmentEnabled &&
+                SmsMmsEnricher.isMessagingPackage(applicationContext, pkg)
+            val imageForwarding = settings.imageForwardingEnabled
+            val logId = UUID.randomUUID().toString()
 
             scope.launch {
-                try {
-                    TelegramApi.sendTestMessage(botToken, chatId, message)
-                } catch (e: Exception) {
-                    // intentionally silent
+                val enrichment = if (shouldEnrichLms) {
+                    SmsMmsEnricher.enrichWithMediaIfPossible(
+                        context = applicationContext,
+                        packageName = pkg,
+                        senderHint = extracted.title,
+                        notificationText = candidateText,
+                        postTimeMillis = postTime
+                    )
+                } else {
+                    null
+                }
+
+                val jpegBytes = if (imageForwarding) {
+                    NotificationImageExtractor.loadCompressedJpeg(
+                        context = applicationContext,
+                        sources = imageSources,
+                        extraUris = enrichment?.imageUris.orEmpty()
+                    )
+                } else {
+                    null
+                }
+
+                val enrichedText = enrichment?.text ?: candidateText
+                val finalText = if (jpegBytes != null && enrichedText.isBlank()) {
+                    "[이미지]"
+                } else {
+                    enrichedText
+                }
+
+                val message = MessageFormatter.format(
+                    template = template,
+                    appName = appName,
+                    title = extracted.title,
+                    text = finalText,
+                    time = timeStr,
+                    packageName = pkg
+                )
+
+                val cachedPath = if (jpegBytes != null) {
+                    PendingImageStore.save(applicationContext, logId, jpegBytes)
+                } else {
+                    null
+                }
+
+                val logItem = NotificationLogItem(
+                    id = logId,
+                    packageName = pkg,
+                    appName = appName,
+                    title = extracted.title,
+                    text = finalText,
+                    formattedMessage = message,
+                    chatId = targetChatId,
+                    timestampMillis = postTime,
+                    timeDisplay = timeStr,
+                    status = DeliveryStatus.PENDING_RETRY,
+                    hasImage = jpegBytes != null,
+                    imageCachePath = cachedPath,
+                    canReply = replyAction != null
+                )
+                repo.addLogItem(logItem)
+
+                val result = if (jpegBytes != null) {
+                    TelegramApi.sendPhotoWithText(
+                        botToken = botToken,
+                        chatId = targetChatId,
+                        photoBytes = jpegBytes,
+                        text = message
+                    )
+                } else {
+                    TelegramApi.sendMessage(
+                        botToken = botToken,
+                        chatId = targetChatId,
+                        text = message
+                    )
+                }
+
+                if (result.success) {
+                    if (replyAction != null && result.messageIds.isNotEmpty()) {
+                        ReplyActionStore.register(
+                            telegramChatId = targetChatId,
+                            telegramMessageIds = result.messageIds,
+                            target = ReplyTarget(
+                                telegramChatId = targetChatId,
+                                packageName = pkg,
+                                appName = appName,
+                                senderTitle = extracted.title,
+                                notificationKey = notifKey,
+                                actionIntent = replyAction.actionIntent,
+                                remoteInputs = replyAction.remoteInputs,
+                                createdAtMillis = System.currentTimeMillis()
+                            )
+                        )
+                    }
+                    repo.updateLogStatus(
+                        id = logId,
+                        status = DeliveryStatus.SENT,
+                        errorMessage = null,
+                        incrementSentToday = true,
+                        incrementRetryCount = false,
+                        clearImageCache = true
+                    )
+                } else if (result.retryable) {
+                    repo.updateLogStatus(
+                        id = logId,
+                        status = DeliveryStatus.PENDING_RETRY,
+                        errorMessage = result.message,
+                        incrementSentToday = false,
+                        incrementRetryCount = false
+                    )
+                    RetryDeliveryWorker.enqueue(applicationContext)
+                } else {
+                    repo.updateLogStatus(
+                        id = logId,
+                        status = DeliveryStatus.FAILED,
+                        errorMessage = result.message,
+                        incrementSentToday = false,
+                        incrementRetryCount = false
+                    )
                 }
             }
-
-            // Append to recent_notifications (keep max 20)
-            try {
-                val recentJson = prefs.getString("recent_notifications", "[]") ?: "[]"
-                val arr = JSONArray(recentJson)
-                val obj = JSONObject()
-                obj.put("emoji", "🔔")
-                obj.put("app", appName)
-                obj.put("message", message.replace("\n", " "))
-                obj.put("time", timeStr)
-                obj.put("package", pkg)
-                // prepend
-                val newArr = JSONArray()
-                newArr.put(obj)
-                for (i in 0 until arr.length()) {
-                    if (newArr.length() >= 20) break
-                    newArr.put(arr.get(i))
-                }
-                prefs.edit().putString("recent_notifications", newArr.toString()).apply()
-                // increment today's sent counter
-                try {
-                    val today = prefs.getInt("sent_notifications_today", 0)
-                    prefs.edit().putInt("sent_notifications_today", today + 1).apply()
-                } catch (_: Exception) {}
-
-                // notify UI to refresh recent/stats
-                try {
-                    val ctx = applicationContext
-                    ctx.sendBroadcast(Intent("com.example.telegramalramrelay.ACTION_RECENT_UPDATED"))
-                    ctx.sendBroadcast(Intent("com.example.telegramalramrelay.ACTION_STATS_UPDATED"))
-                } catch (_: Exception) {}
-            } catch (_: Exception) {
-                // ignore persistence errors
-            }
-        } catch (e: Exception) {
-            // intentionally silent on errors
+        } catch (_: Exception) {
+            // Protect NotificationListenerService process from crashing on malformed notifications
         }
     }
 
-    override fun onNotificationRemoved(sbn: StatusBarNotification) {
+    override fun onNotificationRemoved(sbn: StatusBarNotification?) {
         // no-op
     }
 }

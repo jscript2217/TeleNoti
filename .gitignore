@@ -1,3 +1,22 @@
-# 프로젝트 제외 경로
+# Gradle & build outputs
 /.gradle/
+/.kotlin/
 /build/
+app/build/
+app/debug/
+app/release/
+*.apk
+*.aab
+
+# Local & IDE files
+local.properties
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Signing keys & secrets
+jks/
+*.jks
+*.keystore
+keystore.properties

@@ -4,126 +4,253 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import com.example.telegramalramrelay.R
+import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
+import com.example.telegramalramrelay.data.SettingsRepository
+import com.example.telegramalramrelay.data.TeleNotiSettings
+import com.example.telegramalramrelay.network.TelegramReplyPoller
+import com.example.telegramalramrelay.service.TeleNotiTileService
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.launch
+import java.util.Calendar
 
 class AppKeepAliveService : Service() {
-    companion object {
-        var isRunning = false
-    }
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    private val CHANNEL_ID = "telegramalramrelay_service"
-    private val ACTION_STOP = "com.example.telegramalramrelay.ACTION_STOP"
-    private val ACTION_UPDATE_PIN = "com.example.telegramalramrelay.ACTION_UPDATE_PIN"
+    companion object {
+        private const val TAG = "AppKeepAliveService"
+        private const val NOTIFICATION_ID = 1
+        const val CHANNEL_ID = "telegramalramrelay_service"
+        const val ACTION_STOP = "com.example.telegramalramrelay.ACTION_STOP"
+        const val ACTION_UPDATE_PIN = "com.example.telegramalramrelay.ACTION_UPDATE_PIN"
+        const val ACTION_TOGGLE_FORWARDING = "com.example.telegramalramrelay.ACTION_TOGGLE_FORWARDING"
+
+        private val _isRunningFlow = MutableStateFlow(false)
+        val isRunningFlow: StateFlow<Boolean> = _isRunningFlow.asStateFlow()
+
+        var isRunning: Boolean
+            get() = _isRunningFlow.value
+            set(value) {
+                _isRunningFlow.value = value
+            }
+
+        fun start(context: Context) {
+            val intent = Intent(context, AppKeepAliveService::class.java)
+            ContextCompat.startForegroundService(context, intent)
+        }
+
+        fun stop(context: Context) {
+            val appCtx = context.applicationContext
+            val stopIntent = Intent(appCtx, AppKeepAliveService::class.java).apply {
+                action = ACTION_STOP
+            }
+            try {
+                appCtx.startService(stopIntent)
+            } catch (_: Exception) {
+                try {
+                    appCtx.stopService(Intent(appCtx, AppKeepAliveService::class.java))
+                } catch (_: Exception) {}
+            }
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
         isRunning = true
         createNotificationChannel()
+        val repo = SettingsRepository.getInstance(applicationContext)
+        promoteToForeground(repo.currentSettings(), NotificationListenerServiceImpl.isConnected.value)
+        TelegramReplyPoller.syncState(applicationContext)
 
-        try {
-            val prefs = getSharedPreferences("settings", MODE_PRIVATE)
-            val pin = prefs.getBoolean("pinNotification", false)
-            val notification = createNotification(pin)
-            // Always start foreground with ongoing notification so it cannot be swiped away while service runs
-            startForeground(1, notification)
-            Log.d("AppKeepAliveService", "startForeground called, pin=$pin")
-        } catch (e: Exception) {
-            try { Log.w("AppKeepAliveService", "startForeground failed: ${e.message}") } catch (_: Exception) {}
+        serviceScope.launch {
+            combine(
+                repo.settings,
+                NotificationListenerServiceImpl.isConnected
+            ) { settings, connected ->
+                settings to connected
+            }.collect { (settings, connected) ->
+                updatePostedNotification(settings, connected)
+            }
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Ensure the service remains running; request restart if killed
-        isRunning = true
-        // Handle stop action from notification
-        val action = intent?.action
-        if (action == ACTION_STOP) {
-            Log.d("AppKeepAliveService", "Received ACTION_STOP, stopping service")
-            try { stopForeground(true) } catch (_: Exception) {}
-            stopSelf()
-            isRunning = false
-            return START_NOT_STICKY
-        } else if (action == ACTION_UPDATE_PIN) {
-            try {
-                val prefs = getSharedPreferences("settings", MODE_PRIVATE)
-                val pin = prefs.getBoolean("pinNotification", false)
-                val notification = createNotification(pin)
-                // Update posted notification and adjust foreground/dismissible state
-                val manager = getSystemService(NotificationManager::class.java)
-                manager?.notify(1, notification)
+        val repo = SettingsRepository.getInstance(applicationContext)
+        when (intent?.action) {
+            ACTION_STOP -> {
+                Log.d(TAG, "Received ACTION_STOP, stopping service")
+                isRunning = false
                 try {
-                    startForeground(1, notification)
+                    repo.setBackgroundEnabled(false)
                 } catch (_: Exception) {}
-                Log.d("AppKeepAliveService", "ACTION_UPDATE_PIN applied, pin=$pin")
-            } catch (e: Exception) {
-                Log.w("AppKeepAliveService", "ACTION_UPDATE_PIN failed: ${e.message}")
+                ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return START_NOT_STICKY
             }
-            return START_STICKY
+
+            ACTION_TOGGLE_FORWARDING -> {
+                val next = !repo.currentSettings().forwardingEnabled
+                repo.setForwardingEnabled(next)
+                TeleNotiTileService.requestUpdate(applicationContext)
+                promoteToForeground(repo.currentSettings(), NotificationListenerServiceImpl.isConnected.value)
+                return START_STICKY
+            }
+
+            ACTION_UPDATE_PIN -> {
+                promoteToForeground(repo.currentSettings(), NotificationListenerServiceImpl.isConnected.value)
+                return START_STICKY
+            }
         }
 
-        // If for some reason foreground wasn't started in onCreate (rare), ensure notification
-        try {
-            val prefs = getSharedPreferences("settings", MODE_PRIVATE)
-            val pin = prefs.getBoolean("pinNotification", false)
-            val notification = createNotification(pin)
-            startForeground(1, notification)
-            Log.d("AppKeepAliveService", "onStartCommand startForeground called, pin=$pin")
-        } catch (_: Exception) {}
-
+        isRunning = true
+        promoteToForeground(repo.currentSettings(), NotificationListenerServiceImpl.isConnected.value)
         return START_STICKY
     }
 
     override fun onDestroy() {
         isRunning = false
-        try { stopForeground(true) } catch (_: Exception) {}
+        serviceScope.cancel()
+        if (!NotificationListenerServiceImpl.isConnected.value) {
+            TelegramReplyPoller.stop()
+        }
+        try {
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        } catch (_: Exception) {}
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val chan = NotificationChannel(CHANNEL_ID, "텔레노티 서비스", NotificationManager.IMPORTANCE_LOW)
-            chan.description = "텔레노티의 백그라운드 서비스 알림 채널"
-            chan.lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
-            val manager = getSystemService(NotificationManager::class.java)
-            manager?.createNotificationChannel(chan)
-            Log.d("AppKeepAliveService", "notification channel created: ${chan.id} importance=${chan.importance}")
+    private fun promoteToForeground(settings: TeleNotiSettings, connected: Boolean) {
+        try {
+            val notification = createNotification(settings, connected)
+            val serviceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            } else {
+                0
+            }
+            ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, serviceType)
+        } catch (e: Exception) {
+            Log.w(TAG, "startForeground failed: ${e.message}")
         }
     }
 
-    private fun createNotification(pin: Boolean): android.app.Notification {
+    private fun updatePostedNotification(settings: TeleNotiSettings, connected: Boolean) {
+        try {
+            val manager = getSystemService(NotificationManager::class.java)
+            manager?.notify(NOTIFICATION_ID, createNotification(settings, connected))
+        } catch (_: Exception) {}
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val chan = NotificationChannel(
+                CHANNEL_ID,
+                "텔레노티 서비스",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "텔레노티의 실시간 알림 포워딩 상태 표시 채널"
+                lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+            }
+            val manager = getSystemService(NotificationManager::class.java)
+            manager?.createNotificationChannel(chan)
+        }
+    }
+
+    private fun createNotification(
+        settings: TeleNotiSettings,
+        connected: Boolean
+    ): android.app.Notification {
         val mainIntent = Intent(this, MainActivity::class.java)
         val mainPending = PendingIntent.getActivity(
             this,
             0,
             mainIntent,
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        val stopIntent = Intent(this, AppKeepAliveService::class.java).apply { action = ACTION_STOP }
+        val toggleIntent = Intent(this, AppKeepAliveService::class.java).apply {
+            action = ACTION_TOGGLE_FORWARDING
+        }
+        val togglePending = PendingIntent.getService(
+            this,
+            1,
+            toggleIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val stopIntent = Intent(this, AppKeepAliveService::class.java).apply {
+            action = ACTION_STOP
+        }
         val stopPending = PendingIntent.getService(
             this,
-            0,
+            2,
             stopIntent,
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT else PendingIntent.FLAG_UPDATE_CURRENT
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
+        val hasNotifAccess = try {
+            val enabled = Settings.Secure.getString(contentResolver, "enabled_notification_listeners") ?: ""
+            enabled.contains(packageName)
+        } catch (_: Exception) {
+            false
+        }
+
+        val cal = Calendar.getInstance()
+        val inQuietNow = settings.quietHours.isQuietAt(
+            cal.get(Calendar.HOUR_OF_DAY),
+            cal.get(Calendar.MINUTE)
+        )
+
+        val title = when {
+            !hasNotifAccess -> "텔레노티 · 권한 확인 필요"
+            !settings.forwardingEnabled -> "텔레노티 · 일시 중지됨"
+            inQuietNow -> "텔레노티 · 방해금지 중 (오늘 ${settings.sentToday}건)"
+            connected -> "텔레노티 · 포워딩 작동 중 (오늘 ${settings.sentToday}건)"
+            else -> "텔레노티 · 연결 대기 중"
+        }
+
+        val lastItem = settings.recentNotifications.firstOrNull()
+        val body = buildString {
+            append("감시 앱 ${settings.selectedPackages.size}개")
+            if (lastItem != null) {
+                append(" · 최근: ${lastItem.appName} (${lastItem.timeDisplay})")
+            }
+        }
+
+        val toggleIcon = if (settings.forwardingEnabled) {
+            android.R.drawable.ic_media_pause
+        } else {
+            android.R.drawable.ic_media_play
+        }
+        val toggleLabel = if (settings.forwardingEnabled) "일시 중지" else "전송 재개"
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("텔레노티 서비스")
-            .setContentText("알림 포워딩 서비스중")
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setSmallIcon(R.drawable.ic_stat_telenoti)
             .setContentIntent(mainPending)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setPriority(NotificationCompat.PRIORITY_LOW)
-            // Make notification ongoing/un-dismissible while service runs
+            .setOnlyAlertOnce(true)
             .setOngoing(true)
-            .addAction(android.R.drawable.ic_media_pause, "중지", stopPending)
+            .addAction(toggleIcon, toggleLabel, togglePending)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "서비스 끄기", stopPending)
             .build()
     }
 }
