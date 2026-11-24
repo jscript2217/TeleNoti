@@ -245,5 +245,6 @@ data class TeleNotiSettings(
     val lmsEnrichmentEnabled: Boolean = true,
     val observedPackages: Set<String> = emptySet(),
     val imageForwardingEnabled: Boolean = true,
-    val telegramReplyEnabled: Boolean = true
+    val telegramReplyEnabled: Boolean = true,
+    val incomingCallAlertEnabled: Boolean = true
 )

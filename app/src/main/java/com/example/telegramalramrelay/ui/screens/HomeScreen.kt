@@ -85,7 +85,8 @@ fun HomeScreen(
     onNavigateToSettings: () -> Unit,
     onNavigateToGuide: () -> Unit,
     onRequestNotificationPermission: () -> Unit,
-    onRequestSmsPermission: () -> Unit
+    onRequestSmsPermission: () -> Unit,
+    onRequestCallPermissions: () -> Unit
 ) {
     val context = LocalContext.current
     val settings by viewModel.settings.collectAsStateWithLifecycle()
@@ -96,6 +97,7 @@ fun HomeScreen(
     val notifAccessEnabled by viewModel.notificationAccessEnabled.collectAsStateWithLifecycle()
     val ignoringBattery by viewModel.ignoringBatteryOptimizations.collectAsStateWithLifecycle()
     val readSmsGranted by viewModel.readSmsGranted.collectAsStateWithLifecycle()
+    val readPhoneStateGranted by viewModel.readPhoneStateGranted.collectAsStateWithLifecycle()
     val retryingIds by viewModel.retryingIds.collectAsStateWithLifecycle()
 
     val isDark = when (settings.themeMode) {
@@ -113,6 +115,7 @@ fun HomeScreen(
             viewModel = viewModel,
             onRequestNotificationPermission = onRequestNotificationPermission,
             onRequestSmsPermission = onRequestSmsPermission,
+            onRequestCallPermissions = onRequestCallPermissions,
             onDismiss = { showWizardDialog = false }
         )
     }
@@ -476,6 +479,7 @@ fun HomeScreen(
 
                     val badges = buildList {
                         if (settings.telegramReplyEnabled && replyPollingActive) add("양방향 답장")
+                        if (settings.incomingCallAlertEnabled && readPhoneStateGranted) add("수신 전화 알림")
                         if (settings.imageForwardingEnabled) add("이미지 전송")
                         if (settings.lmsEnrichmentEnabled && readSmsGranted) add("긴 문자(LMS/MMS) 보강")
                         if (settings.keywordFilter.enabled) add("키워드 필터 ON")

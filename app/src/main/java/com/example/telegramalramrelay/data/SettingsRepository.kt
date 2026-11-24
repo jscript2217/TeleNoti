@@ -194,6 +194,13 @@ class SettingsRepository private constructor(context: Context) {
         }
     }
 
+    fun setIncomingCallAlertEnabled(enabled: Boolean) {
+        synchronized(lock) {
+            prefs.edit().putBoolean(KEY_INCOMING_CALL_ALERT_ENABLED, enabled).apply()
+            _settings.value = _settings.value.copy(incomingCallAlertEnabled = enabled)
+        }
+    }
+
     fun getLastTelegramUpdateId(): Long = synchronized(lock) {
         prefs.getLong(KEY_LAST_TELEGRAM_UPDATE_ID, 0L)
     }
@@ -422,7 +429,8 @@ class SettingsRepository private constructor(context: Context) {
             lmsEnrichmentEnabled = prefs.getBoolean(KEY_LMS_ENRICHMENT_ENABLED, true),
             observedPackages = observed.toSet(),
             imageForwardingEnabled = prefs.getBoolean(KEY_IMAGE_FORWARDING_ENABLED, true),
-            telegramReplyEnabled = prefs.getBoolean(KEY_TELEGRAM_REPLY_ENABLED, true)
+            telegramReplyEnabled = prefs.getBoolean(KEY_TELEGRAM_REPLY_ENABLED, true),
+            incomingCallAlertEnabled = prefs.getBoolean(KEY_INCOMING_CALL_ALERT_ENABLED, true)
         )
     }
 
@@ -461,6 +469,7 @@ class SettingsRepository private constructor(context: Context) {
         const val KEY_OBSERVED_PACKAGES = "observed_packages"
         const val KEY_IMAGE_FORWARDING_ENABLED = "image_forwarding_enabled"
         const val KEY_TELEGRAM_REPLY_ENABLED = "telegram_reply_enabled"
+        const val KEY_INCOMING_CALL_ALERT_ENABLED = "incoming_call_alert_enabled"
         const val KEY_LAST_TELEGRAM_UPDATE_ID = "last_telegram_update_id"
 
         @Volatile

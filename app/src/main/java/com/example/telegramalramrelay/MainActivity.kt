@@ -91,6 +91,37 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val requestCallPermissionsLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        viewModel.refreshSystemStatus()
+        val phoneGranted = grants[Manifest.permission.READ_PHONE_STATE] == true ||
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.READ_PHONE_STATE
+            ) == PackageManager.PERMISSION_GRANTED
+        val callLogGranted = grants[Manifest.permission.READ_CALL_LOG] == true ||
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.READ_CALL_LOG
+            ) == PackageManager.PERMISSION_GRANTED
+        if (phoneGranted) {
+            viewModel.setIncomingCallAlertEnabled(true)
+            val msg = if (callLogGranted) {
+                "전화·통화 기록 권한이 허용되어 발신번호 즉시 알림이 켜졌습니다."
+            } else {
+                "전화 상태 권한이 허용되었습니다. 통화 기록 권한을 허용하면 발신번호도 표시됩니다."
+            }
+            Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+        } else {
+            Toast.makeText(
+                this,
+                "수신 전화 알림에는 전화 권한이 필요합니다. (One UI 7에서는 앱 정보 > ⋮ > 제한된 설정 허용 후 다시 시도하세요)",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -145,6 +176,15 @@ class MainActivity : ComponentActivity() {
                     },
                     onRequestSmsPermission = {
                         requestSmsPermissionLauncher.launch(Manifest.permission.READ_SMS)
+                    },
+                    onRequestCallPermissions = {
+                        requestCallPermissionsLauncher.launch(
+                            arrayOf(
+                                Manifest.permission.READ_PHONE_STATE,
+                                Manifest.permission.READ_CALL_LOG,
+                                Manifest.permission.READ_CONTACTS
+                            )
+                        )
                     }
                 )
             }
@@ -156,7 +196,8 @@ class MainActivity : ComponentActivity() {
 fun MainScreen(
     viewModel: MainViewModel,
     onRequestNotificationPermission: () -> Unit,
-    onRequestSmsPermission: () -> Unit
+    onRequestSmsPermission: () -> Unit,
+    onRequestCallPermissions: () -> Unit
 ) {
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
 
@@ -181,19 +222,22 @@ fun MainScreen(
                     onNavigateToSettings = { selectedTab = 2 },
                     onNavigateToGuide = { selectedTab = 4 },
                     onRequestNotificationPermission = onRequestNotificationPermission,
-                    onRequestSmsPermission = onRequestSmsPermission
+                    onRequestSmsPermission = onRequestSmsPermission,
+                    onRequestCallPermissions = onRequestCallPermissions
                 )
                 1 -> AppSelectorScreen(viewModel = viewModel)
                 2 -> BotSettingsScreen(
                     viewModel = viewModel,
                     onRequestNotificationPermission = onRequestNotificationPermission,
-                    onRequestSmsPermission = onRequestSmsPermission
+                    onRequestSmsPermission = onRequestSmsPermission,
+                    onRequestCallPermissions = onRequestCallPermissions
                 )
                 3 -> FormatSettingsScreen(viewModel = viewModel)
                 4 -> GuideScreen(
                     viewModel = viewModel,
                     onRequestNotificationPermission = onRequestNotificationPermission,
-                    onRequestSmsPermission = onRequestSmsPermission
+                    onRequestSmsPermission = onRequestSmsPermission,
+                    onRequestCallPermissions = onRequestCallPermissions
                 )
             }
         }

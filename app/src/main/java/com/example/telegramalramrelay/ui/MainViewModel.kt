@@ -75,6 +75,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _readSmsGranted = MutableStateFlow(checkReadSmsGranted())
     val readSmsGranted: StateFlow<Boolean> = _readSmsGranted.asStateFlow()
 
+    private val _readPhoneStateGranted = MutableStateFlow(checkReadPhoneStateGranted())
+    val readPhoneStateGranted: StateFlow<Boolean> = _readPhoneStateGranted.asStateFlow()
+
+    private val _readCallLogGranted = MutableStateFlow(checkReadCallLogGranted())
+    val readCallLogGranted: StateFlow<Boolean> = _readCallLogGranted.asStateFlow()
+
+    private val _readContactsGranted = MutableStateFlow(checkReadContactsGranted())
+    val readContactsGranted: StateFlow<Boolean> = _readContactsGranted.asStateFlow()
+
     private val _retryingIds = MutableStateFlow<Set<String>>(emptySet())
     val retryingIds: StateFlow<Set<String>> = _retryingIds.asStateFlow()
 
@@ -89,6 +98,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _notificationAccessEnabled.value = checkNotificationAccess()
         _ignoringBatteryOptimizations.value = checkIgnoringBatteryOptimizations()
         _readSmsGranted.value = checkReadSmsGranted()
+        _readPhoneStateGranted.value = checkReadPhoneStateGranted()
+        _readCallLogGranted.value = checkReadCallLogGranted()
+        _readContactsGranted.value = checkReadContactsGranted()
     }
 
     fun checkDailyReset() {
@@ -281,6 +293,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         TelegramReplyPoller.syncState(appCtx)
     }
 
+    fun setIncomingCallAlertEnabled(enabled: Boolean) {
+        repo.setIncomingCallAlertEnabled(enabled)
+    }
+
     fun setDailyResetConfig(config: DailyResetConfig) {
         repo.setDailyResetConfig(config)
         DailyResetScheduler.scheduleNextReset(appCtx)
@@ -464,6 +480,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return ContextCompat.checkSelfPermission(
             appCtx,
             Manifest.permission.READ_SMS
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun checkReadPhoneStateGranted(): Boolean {
+        return ContextCompat.checkSelfPermission(
+            appCtx,
+            Manifest.permission.READ_PHONE_STATE
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun checkReadCallLogGranted(): Boolean {
+        return ContextCompat.checkSelfPermission(
+            appCtx,
+            Manifest.permission.READ_CALL_LOG
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun checkReadContactsGranted(): Boolean {
+        return ContextCompat.checkSelfPermission(
+            appCtx,
+            Manifest.permission.READ_CONTACTS
         ) == PackageManager.PERMISSION_GRANTED
     }
 }

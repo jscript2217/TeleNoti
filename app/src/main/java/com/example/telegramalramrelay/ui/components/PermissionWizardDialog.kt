@@ -50,6 +50,7 @@ fun PermissionWizardDialog(
     viewModel: MainViewModel,
     onRequestNotificationPermission: () -> Unit,
     onRequestSmsPermission: () -> Unit,
+    onRequestCallPermissions: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -58,6 +59,9 @@ fun PermissionWizardDialog(
     val notifAccessEnabled by viewModel.notificationAccessEnabled.collectAsStateWithLifecycle()
     val ignoringBattery by viewModel.ignoringBatteryOptimizations.collectAsStateWithLifecycle()
     val readSmsGranted by viewModel.readSmsGranted.collectAsStateWithLifecycle()
+    val readPhoneStateGranted by viewModel.readPhoneStateGranted.collectAsStateWithLifecycle()
+    val readCallLogGranted by viewModel.readCallLogGranted.collectAsStateWithLifecycle()
+    val readContactsGranted by viewModel.readContactsGranted.collectAsStateWithLifecycle()
     val serviceRunning by viewModel.serviceRunning.collectAsStateWithLifecycle()
 
     val requiredStepsDone = listOf(
@@ -255,6 +259,44 @@ fun PermissionWizardDialog(
                                 contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
                             ) {
                                 Text("SMS 읽기 권한 허용", fontSize = 12.sp)
+                            }
+                        }
+                    }
+
+                    // Step 6: Optional Incoming Call instant alert permissions
+                    val callDone = readPhoneStateGranted && readCallLogGranted
+                    val callBadge = when {
+                        readPhoneStateGranted && readCallLogGranted && readContactsGranted -> "완료"
+                        readPhoneStateGranted && readCallLogGranted -> "번호 완료"
+                        readPhoneStateGranted -> "일부"
+                        else -> "선택"
+                    }
+                    val callDescription = when {
+                        readPhoneStateGranted && readCallLogGranted && readContactsGranted ->
+                            "전화가 오면 발신자 이름과 전화번호를 즉시 텔레그램으로 알려드립니다."
+                        readPhoneStateGranted && readCallLogGranted ->
+                            "전화가 오면 발신번호를 즉시 알려드립니다. 연락처 권한을 추가하면 저장된 이름도 함께 표시됩니다."
+                        readPhoneStateGranted ->
+                            "전화 울림은 감지되지만 통화 기록 권한이 없어 번호가 보이지 않습니다. 발신번호를 보려면 허용해 주세요."
+                        else ->
+                            "벨이 울리는 즉시 텔레그램으로 알림을 보내려면 전화·통화 기록 권한이 필요합니다. (연락처 권한 허용 시 이름도 표시 · One UI 7에서 차단 시 위 '앱 정보 열기'에서 제한된 설정을 먼저 허용하세요)"
+                    }
+                    WizardStepCard(
+                        stepTitle = "6. 수신 전화 즉시 알림",
+                        badge = callBadge,
+                        done = callDone,
+                        description = callDescription
+                    ) {
+                        if (!readPhoneStateGranted || !readCallLogGranted || !readContactsGranted) {
+                            Button(
+                                onClick = { onRequestCallPermissions() },
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+                            ) {
+                                Text(
+                                    text = if (callDone) "연락처 이름 표시도 허용" else "전화·발신번호 권한 허용",
+                                    fontSize = 12.sp
+                                )
                             }
                         }
                     }

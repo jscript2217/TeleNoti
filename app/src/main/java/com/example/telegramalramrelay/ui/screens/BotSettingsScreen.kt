@@ -90,7 +90,8 @@ private enum class ActiveTimePickerTarget {
 fun BotSettingsScreen(
     viewModel: MainViewModel,
     onRequestNotificationPermission: () -> Unit,
-    onRequestSmsPermission: () -> Unit
+    onRequestSmsPermission: () -> Unit,
+    onRequestCallPermissions: () -> Unit
 ) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
@@ -98,6 +99,9 @@ fun BotSettingsScreen(
     val notifAccessEnabled by viewModel.notificationAccessEnabled.collectAsStateWithLifecycle()
     val ignoringBattery by viewModel.ignoringBatteryOptimizations.collectAsStateWithLifecycle()
     val readSmsGranted by viewModel.readSmsGranted.collectAsStateWithLifecycle()
+    val readPhoneStateGranted by viewModel.readPhoneStateGranted.collectAsStateWithLifecycle()
+    val readCallLogGranted by viewModel.readCallLogGranted.collectAsStateWithLifecycle()
+    val readContactsGranted by viewModel.readContactsGranted.collectAsStateWithLifecycle()
 
     var botToken by remember { mutableStateOf(settings.botToken) }
     var chatId by remember { mutableStateOf(settings.chatId) }
@@ -118,6 +122,7 @@ fun BotSettingsScreen(
             viewModel = viewModel,
             onRequestNotificationPermission = onRequestNotificationPermission,
             onRequestSmsPermission = onRequestSmsPermission,
+            onRequestCallPermissions = onRequestCallPermissions,
             onDismiss = { showWizardDialog = false }
         )
     }
@@ -648,6 +653,40 @@ fun BotSettingsScreen(
                     checked = settings.telegramReplyEnabled,
                     onCheckedChange = { viewModel.setTelegramReplyEnabled(it) }
                 )
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                // Incoming call instant alert toggle
+                SwitchSettingRow(
+                    title = "수신 전화 즉시 알림",
+                    subtitle = when {
+                        settings.incomingCallAlertEnabled && readPhoneStateGranted && readCallLogGranted && readContactsGranted ->
+                            "활성화됨 · 발신자 이름·전화번호를 즉시 텔레그램으로 전송"
+                        settings.incomingCallAlertEnabled && readPhoneStateGranted && readCallLogGranted ->
+                            "활성화됨 · 발신번호 즉시 전송 (연락처 권한 허용 시 이름도 표시)"
+                        settings.incomingCallAlertEnabled && readPhoneStateGranted ->
+                            "전화 감지 활성 · 통화 기록 권한 허용 시 발신번호 표시"
+                        settings.incomingCallAlertEnabled ->
+                            "전화·통화 기록 권한 필요 (아래 버튼을 눌러 허용하세요)"
+                        else -> "비활성화 (수신 전화는 텔레그램으로 알리지 않음)"
+                    },
+                    checked = settings.incomingCallAlertEnabled,
+                    onCheckedChange = { enabled ->
+                        viewModel.setIncomingCallAlertEnabled(enabled)
+                        if (enabled && (!readPhoneStateGranted || !readCallLogGranted)) {
+                            onRequestCallPermissions()
+                        }
+                    }
+                )
+                if (settings.incomingCallAlertEnabled && (!readPhoneStateGranted || !readCallLogGranted)) {
+                    OutlinedButton(
+                        onClick = onRequestCallPermissions,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("전화·발신번호 권한 허용하기", fontSize = 12.sp)
+                    }
+                }
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 

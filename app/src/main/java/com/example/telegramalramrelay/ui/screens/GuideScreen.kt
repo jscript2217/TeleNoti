@@ -54,7 +54,8 @@ import com.example.telegramalramrelay.util.openNotificationListenerSettings
 fun GuideScreen(
     viewModel: MainViewModel,
     onRequestNotificationPermission: () -> Unit,
-    onRequestSmsPermission: () -> Unit
+    onRequestSmsPermission: () -> Unit,
+    onRequestCallPermissions: () -> Unit
 ) {
     val context = LocalContext.current
     val settings by viewModel.settings.collectAsStateWithLifecycle()
@@ -62,6 +63,9 @@ fun GuideScreen(
     val notifAccessEnabled by viewModel.notificationAccessEnabled.collectAsStateWithLifecycle()
     val ignoringBattery by viewModel.ignoringBatteryOptimizations.collectAsStateWithLifecycle()
     val readSmsGranted by viewModel.readSmsGranted.collectAsStateWithLifecycle()
+    val readPhoneStateGranted by viewModel.readPhoneStateGranted.collectAsStateWithLifecycle()
+    val readCallLogGranted by viewModel.readCallLogGranted.collectAsStateWithLifecycle()
+    val readContactsGranted by viewModel.readContactsGranted.collectAsStateWithLifecycle()
     val listenerConnected by viewModel.listenerConnected.collectAsStateWithLifecycle()
     val serviceRunning by viewModel.serviceRunning.collectAsStateWithLifecycle()
 
@@ -70,9 +74,9 @@ fun GuideScreen(
     val appVersion = remember {
         try {
             val pi = context.packageManager.getPackageInfo(context.packageName, 0)
-            pi.versionName ?: "2.1.0"
+            pi.versionName ?: "2.4.0"
         } catch (_: Exception) {
-            "2.1.0"
+            "2.4.0"
         }
     }
 
@@ -81,6 +85,7 @@ fun GuideScreen(
             viewModel = viewModel,
             onRequestNotificationPermission = onRequestNotificationPermission,
             onRequestSmsPermission = onRequestSmsPermission,
+            onRequestCallPermissions = onRequestCallPermissions,
             onDismiss = { showWizardDialog = false }
         )
     }
@@ -308,6 +313,12 @@ fun GuideScreen(
                 )
 
                 ExpandableFaqItem(
+                    question = "전화가 올 때도 바로 텔레그램으로 알림을 받을 수 있나요?",
+                    answer = "네! 설정 탭의 '수신 전화 즉시 알림'을 켜고 전화·통화 기록 권한을 허용하면 벨이 울리는 즉시 발신번호와 함께 텔레그램으로 알려드립니다. 연락처 권한까지 허용하면 저장된 발신자 이름도 함께 표시됩니다.\n" +
+                        "※ One UI 7에서 권한 요청이 차단되면 '앱 정보 열기' → 우측 상단 ⋮ 메뉴 → '제한된 설정 허용'을 먼저 눌러 주세요. (Android 보안 정책상 전화 대신 받기/통화 음성 중계는 지원되지 않으며 수신 알림만 즉시 전달됩니다.)"
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                ExpandableFaqItem(
                     question = "텔레그램에서 카톡이나 문자로 바로 답장할 수 있나요?",
                     answer = "네! 설정 탭의 '텔레그램에서 바로 답장 (카톡·문자)'이 켜져 있고 알림에 '↩️ 답장 가능'이 지원되는 앱(카카오톡·삼성 메시지·구글 메시지 등)이면, 텔레그램에서 받은 알림 메시지를 길게 누르거나 스와이프하여 '답장(Reply)'으로 전송하면 휴대폰에서 자동으로 회신한 뒤 '✅ 답장 전송 완료' 알림을 보내드립니다.\n" +
                         "※ 카카오톡 알림 내용이 '이름+메시지'로 설정되어 있어야 답장 버튼이 포함되며, '상주 서비스'를 켜두면 화면이 꺼져도 안정적으로 답장 명령을 받을 수 있습니다. 앱을 재시작하기 전 수신한 알림만 답장이 가능합니다."
@@ -382,6 +393,15 @@ fun GuideScreen(
                 DiagnosticRow("알림 접근 권한", if (notifAccessEnabled) "허용됨" else "미허용")
                 DiagnosticRow("배터리 예외 등록", if (ignoringBattery) "예외 등록됨" else "미등록")
                 DiagnosticRow("SMS 원문 보강 권한", if (readSmsGranted) "허용됨" else "미허용 (선택)")
+                DiagnosticRow(
+                    "수신 전화 권한",
+                    when {
+                        readPhoneStateGranted && readCallLogGranted && readContactsGranted -> "전체 허용됨 (이름·번호)"
+                        readPhoneStateGranted && readCallLogGranted -> "전화·번호 허용됨 (연락처 선택)"
+                        readPhoneStateGranted -> "전화만 허용됨 (번호 미표시)"
+                        else -> "미허용 (선택)"
+                    }
+                )
                 DiagnosticRow("실시간 리스너", if (listenerConnected) "연결됨" else "대기 중")
                 DiagnosticRow(
                     "상주 작동 표시",
