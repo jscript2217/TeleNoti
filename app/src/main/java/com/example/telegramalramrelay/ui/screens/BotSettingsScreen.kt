@@ -22,7 +22,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
@@ -44,6 +49,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -70,9 +76,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.telegramalramrelay.AppKeepAliveService
+import com.example.telegramalramrelay.data.ChatProfile
 import com.example.telegramalramrelay.data.DetectedChat
 import com.example.telegramalramrelay.data.KeywordFilterConfig
 import com.example.telegramalramrelay.data.ThemeMode
+import com.example.telegramalramrelay.domain.ChatTargetResolver
 import com.example.telegramalramrelay.ui.MainViewModel
 import com.example.telegramalramrelay.ui.components.PermissionWizardDialog
 import com.example.telegramalramrelay.util.openBatteryOptimizationSettings
@@ -109,6 +117,8 @@ fun BotSettingsScreen(
     var isSendingTest by remember { mutableStateOf(false) }
     var isFetchingChats by remember { mutableStateOf(false) }
     var detectedChatsDialog by remember { mutableStateOf<List<DetectedChat>?>(null) }
+    var editingProfile by remember { mutableStateOf<ChatProfile?>(null) }
+    var profilePendingDelete by remember { mutableStateOf<ChatProfile?>(null) }
 
     var includeKeywordsInput by remember { mutableStateOf(settings.keywordFilter.includeKeywordsRaw) }
     var excludeKeywordsInput by remember { mutableStateOf(settings.keywordFilter.excludeKeywordsRaw) }
@@ -167,30 +177,29 @@ fun BotSettingsScreen(
             onDismissRequest = { detectedChatsDialog = null },
             title = { Text("감지된 채팅방 선택") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     Text(
-                        text = "최근 봇에게 메시지를 보낸 채팅방입니다. 사용할 항목을 누르세요.",
+                        text = "최근 봇에게 메시지를 보낸 채팅방입니다. 기본 수신 ID로 넣거나 프로필로 바로 저장할 수 있습니다.",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     chats.forEach { chat ->
+                        val existingProfile = settings.chatProfiles.firstOrNull {
+                            it.chatId.trim() == chat.chatId.trim()
+                        }
                         Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    chatId = chat.chatId
-                                    detectedChatsDialog = null
-                                    Toast.makeText(
-                                        context,
-                                        "Chat ID 입력됨: ${chat.title} (저장 버튼을 눌러 확정하세요)",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                },
+                            modifier = Modifier.fillMaxWidth(),
                             colors = CardDefaults.cardColors(
                                 containerColor = MaterialTheme.colorScheme.surfaceVariant
                             )
                         ) {
-                            Column(modifier = Modifier.padding(12.dp)) {
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
                                 Text(
                                     text = chat.title,
                                     fontSize = 14.sp,
@@ -202,6 +211,53 @@ fun BotSettingsScreen(
                                     fontSize = 12.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            chatId = chat.chatId
+                                            detectedChatsDialog = null
+                                            Toast.makeText(
+                                                context,
+                                                "Chat ID 입력됨: ${chat.title} (저장 버튼을 눌러 확정하세요)",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                                    ) {
+                                        Text("기본 ID 입력", fontSize = 11.sp)
+                                    }
+                                    FilledTonalButton(
+                                        onClick = {
+                                            viewModel.saveChatProfile(
+                                                id = existingProfile?.id,
+                                                name = existingProfile?.name ?: chat.title,
+                                                chatId = chat.chatId
+                                            )
+                                            Toast.makeText(
+                                                context,
+                                                if (existingProfile != null) {
+                                                    "'${existingProfile.name}' 프로필이 이미 저장되어 있습니다."
+                                                } else {
+                                                    "'${chat.title}' 프로필을 저장했습니다."
+                                                },
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                                    ) {
+                                        Text(
+                                            if (existingProfile != null) "프로필 저장됨" else "프로필로 저장",
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -209,6 +265,50 @@ fun BotSettingsScreen(
             },
             confirmButton = {
                 TextButton(onClick = { detectedChatsDialog = null }) { Text("닫기") }
+            }
+        )
+    }
+
+    editingProfile?.let { target ->
+        ChatProfileEditorDialog(
+            initialProfile = target,
+            botToken = botToken.ifBlank { settings.botToken },
+            viewModel = viewModel,
+            onDismiss = { editingProfile = null },
+            onSave = { nameInput, chatIdInput ->
+                val ok = viewModel.saveChatProfile(
+                    id = target.id.takeIf { it.isNotBlank() },
+                    name = nameInput,
+                    chatId = chatIdInput
+                )
+                if (ok) {
+                    editingProfile = null
+                    Toast.makeText(context, "수신자 프로필이 저장되었습니다.", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(context, "Chat ID를 입력하세요.", Toast.LENGTH_SHORT).show()
+                }
+            }
+        )
+    }
+
+    profilePendingDelete?.let { target ->
+        AlertDialog(
+            onDismissRequest = { profilePendingDelete = null },
+            title = { Text("프로필 삭제") },
+            text = {
+                Text("'${target.name}' (${target.chatId}) 프로필을 삭제할까요?\n기본 동시 전송 및 앱별 맞춤 지정에서도 함께 해제됩니다.")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteChatProfile(target.id)
+                        profilePendingDelete = null
+                        Toast.makeText(context, "'${target.name}' 프로필을 삭제했습니다.", Toast.LENGTH_SHORT).show()
+                    }
+                ) { Text("삭제", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { profilePendingDelete = null }) { Text("취소") }
             }
         )
     }
@@ -428,8 +528,8 @@ fun BotSettingsScreen(
                     value = chatId,
                     onValueChange = { chatId = it },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Chat ID") },
-                    placeholder = { Text("예: 123456789 또는 -100...", fontSize = 13.sp) },
+                    label = { Text("기본 Chat ID (쉼표로 여러 명 가능)") },
+                    placeholder = { Text("예: 123456789 또는 123456789, -100...", fontSize = 13.sp) },
                     trailingIcon = {
                         IconButton(
                             onClick = {
@@ -548,7 +648,7 @@ fun BotSettingsScreen(
                         shape = RoundedCornerShape(12.dp),
                         contentPadding = PaddingValues(vertical = 13.dp)
                     ) {
-                        if (isSendingTest) {
+                            if (isSendingTest) {
                             CircularProgressIndicator(
                                 modifier = Modifier.size(18.dp),
                                 color = MaterialTheme.colorScheme.onPrimary,
@@ -556,6 +656,218 @@ fun BotSettingsScreen(
                             )
                         } else {
                             Text(text = "테스트 메시지", fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                        }
+                    }
+                }
+            }
+        }
+
+        // Chat ID Profiles & Multi-Recipient Management Card
+        val defaultRecipients = remember(
+            settings.chatId,
+            settings.chatProfiles,
+            settings.defaultProfileIds
+        ) {
+            ChatTargetResolver.resolveDefaultRecipients(settings)
+        }
+        val primaryChatIds = remember(settings.chatId) {
+            ChatTargetResolver.parseChatIds(settings.chatId).toSet()
+        }
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "수신자 프로필 관리 (사람·채팅방별)",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "자주 보내는 사람·방 이름을 저장해 앱별 전송이나 2명+ 동시 전송에 사용합니다",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    OutlinedButton(
+                        onClick = { editingProfile = ChatProfile("", "", "") },
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("프로필 추가", fontSize = 12.sp)
+                    }
+                }
+
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                ) {
+                    Text(
+                        text = when {
+                            defaultRecipients.isEmpty() ->
+                                "현재 기본 수신자: 미설정 (위 기본 Chat ID를 입력하거나 프로필에서 '기본 동시전송'을 켜세요)"
+                            defaultRecipients.size == 1 ->
+                                "현재 기본 수신자: ${defaultRecipients[0].label} (${defaultRecipients[0].chatId})"
+                            else ->
+                                "현재 기본 수신자 (${defaultRecipients.size}명 동시 전송): " +
+                                    defaultRecipients.joinToString(", ") { it.label }
+                        },
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(10.dp)
+                    )
+                }
+
+                if (settings.chatProfiles.isEmpty()) {
+                    Text(
+                        text = "저장된 프로필이 없습니다. '+ 프로필 추가'를 누르거나 위 'Chat ID 자동 가져오기 -> 프로필로 저장'을 이용해 보세요.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    settings.chatProfiles.forEachIndexed { idx, profile ->
+                        val isInPrimary = profile.chatId.trim() in primaryChatIds
+                        val isDefaultExtra = profile.id in settings.defaultProfileIds
+
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Person,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Column {
+                                        Text(
+                                            text = profile.name,
+                                            fontSize = 14.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = profile.chatId,
+                                            fontSize = 11.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    IconButton(
+                                        onClick = {
+                                            val activeToken = botToken.ifBlank { settings.botToken }.trim()
+                                            if (activeToken.isBlank()) {
+                                                Toast.makeText(
+                                                    context,
+                                                    "먼저 봇 토큰을 입력하세요.",
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                            } else {
+                                                viewModel.sendTestMessage(activeToken, profile.chatId) { ok, msg ->
+                                                    Toast.makeText(
+                                                        context,
+                                                        if (ok) "'${profile.name}'에게 테스트 메시지 전송 성공" else "전송 실패: $msg",
+                                                        Toast.LENGTH_SHORT
+                                                    ).show()
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier.size(34.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.Send,
+                                            contentDescription = "프로필 테스트 전송",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(17.dp)
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = { editingProfile = profile },
+                                        modifier = Modifier.size(34.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Edit,
+                                            contentDescription = "프로필 수정",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(17.dp)
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = { profilePendingDelete = profile },
+                                        modifier = Modifier.size(34.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Delete,
+                                            contentDescription = "프로필 삭제",
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(17.dp)
+                                        )
+                                    }
+                                }
+                            }
+
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (isInPrimary) {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = MaterialTheme.colorScheme.tertiaryContainer
+                                    ) {
+                                        Text(
+                                            text = "기본 Chat ID에 포함됨",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                        )
+                                    }
+                                } else {
+                                    FilterChip(
+                                        selected = isDefaultExtra,
+                                        onClick = { viewModel.toggleDefaultProfile(profile.id) },
+                                        label = {
+                                            Text(
+                                                text = if (isDefaultExtra) "기본 동시전송 ON" else "기본 동시전송",
+                                                fontSize = 11.sp
+                                            )
+                                        }
+                                    )
+                                }
+                            }
+                        }
+
+                        if (idx < settings.chatProfiles.lastIndex) {
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         }
                     }
                 }
@@ -1035,4 +1347,143 @@ fun InstructionStep(number: String, text: String) {
 
 private fun formatTime(hour: Int, minute: Int): String {
     return "%02d:%02d".format(hour.coerceIn(0, 23), minute.coerceIn(0, 59))
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ChatProfileEditorDialog(
+    initialProfile: ChatProfile,
+    botToken: String,
+    viewModel: MainViewModel,
+    onDismiss: () -> Unit,
+    onSave: (name: String, chatId: String) -> Unit
+) {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    var nameInput by remember { mutableStateOf(initialProfile.name) }
+    var chatIdInput by remember { mutableStateOf(initialProfile.chatId) }
+    var isFetching by remember { mutableStateOf(false) }
+    var fetchedChats by remember { mutableStateOf<List<DetectedChat>>(emptyList()) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = if (initialProfile.id.isBlank()) "수신자 프로필 추가" else "수신자 프로필 수정",
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "프로필 이름을 지정해 두면 앱 선택 화면에서 쉽게 골라 보낼 수 있습니다.",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = nameInput,
+                    onValueChange = { nameInput = it },
+                    label = { Text("프로필 이름 (별칭)") },
+                    placeholder = { Text("예: 아내, 나, 회사 단톡방") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = chatIdInput,
+                    onValueChange = { chatIdInput = it },
+                    label = { Text("텔레그램 Chat ID") },
+                    placeholder = { Text("예: 123456789 또는 -100...") },
+                    trailingIcon = {
+                        IconButton(
+                            onClick = {
+                                clipboard.getText()?.let { chatIdInput = it.text.trim() }
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ContentPaste,
+                                contentDescription = "붙여넣기",
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedButton(
+                    onClick = {
+                        if (isFetching) return@OutlinedButton
+                        val cleanToken = botToken.trim()
+                        if (cleanToken.isBlank()) {
+                            Toast.makeText(context, "먼저 봇 토큰을 입력하세요.", Toast.LENGTH_SHORT).show()
+                            return@OutlinedButton
+                        }
+                        isFetching = true
+                        viewModel.fetchChats(cleanToken) { chats, err ->
+                            isFetching = false
+                            when {
+                                err != null -> Toast.makeText(context, err, Toast.LENGTH_SHORT).show()
+                                chats.isEmpty() -> Toast.makeText(
+                                    context,
+                                    "감지된 채팅방이 없습니다. 봇 방에서 메시지를 먼저 보내 보세요.",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                                else -> fetchedChats = chats
+                            }
+                        }
+                    },
+                    enabled = !isFetching,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    if (isFetching) {
+                        CircularProgressIndicator(modifier = Modifier.size(15.dp), strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("최근 채팅방 조회 중...", fontSize = 12.sp)
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = null,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("최근 봇 대화방에서 불러오기", fontSize = 12.sp)
+                    }
+                }
+
+                if (fetchedChats.isNotEmpty()) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        fetchedChats.forEach { chat ->
+                            FilterChip(
+                                selected = chatIdInput.trim() == chat.chatId.trim(),
+                                onClick = {
+                                    chatIdInput = chat.chatId
+                                    if (nameInput.isBlank()) {
+                                        nameInput = chat.title
+                                    }
+                                },
+                                label = { Text("${chat.title} (${chat.chatId})", fontSize = 11.sp) }
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(nameInput, chatIdInput) }) {
+                Text("저장")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("취소")
+            }
+        }
+    )
 }

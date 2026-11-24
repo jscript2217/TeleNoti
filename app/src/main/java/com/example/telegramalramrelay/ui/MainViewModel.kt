@@ -17,6 +17,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.telegramalramrelay.AppKeepAliveService
 import com.example.telegramalramrelay.NotificationListenerServiceImpl
 import com.example.telegramalramrelay.data.AppCustomRule
+import com.example.telegramalramrelay.data.ChatProfile
 import com.example.telegramalramrelay.data.DailyResetConfig
 import com.example.telegramalramrelay.data.DeliveryStatus
 import com.example.telegramalramrelay.data.DetectedChat
@@ -27,6 +28,7 @@ import com.example.telegramalramrelay.data.QuietHoursConfig
 import com.example.telegramalramrelay.data.SettingsRepository
 import com.example.telegramalramrelay.data.TeleNotiSettings
 import com.example.telegramalramrelay.data.ThemeMode
+import com.example.telegramalramrelay.domain.ChatTargetResolver
 import com.example.telegramalramrelay.domain.NotificationFilter
 import com.example.telegramalramrelay.network.TelegramApi
 import com.example.telegramalramrelay.network.TelegramReplyPoller
@@ -207,6 +209,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun sendTestMessageToDefaultRecipients(onResult: (Int, Int, String) -> Unit) {
+        val current = repo.currentSettings()
+        val recipients = ChatTargetResolver.resolveDefaultRecipients(current)
+        if (current.botToken.isBlank() || recipients.isEmpty()) {
+            onResult(0, 1, "봇 토큰과 기본 Chat ID 또는 프로필을 먼저 설정하세요.")
+            return
+        }
+        viewModelScope.launch {
+            var okCount = 0
+            var failCount = 0
+            var lastMsg = ""
+            for (recipient in recipients) {
+                val (ok, msg) = TelegramApi.sendTestMessage(
+                    botToken = current.botToken.trim(),
+                    chatId = recipient.chatId,
+                    text = "[테스트 메시지 · ${recipient.label}] 이 메시지는 텔레노티에서 보냈습니다."
+                )
+                if (ok) {
+                    okCount++
+                } else {
+                    failCount++
+                    lastMsg = msg
+                }
+            }
+            onResult(okCount, failCount, lastMsg)
+        }
+    }
+
     fun fetchChats(botToken: String, onResult: (List<DetectedChat>, String?) -> Unit) {
         viewModelScope.launch {
             val (chats, err) = TelegramReplyPoller.withPausedPolling(appCtx) {
@@ -254,10 +284,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setAppCustomRule(rule: AppCustomRule) {
         repo.setAppCustomRule(rule)
+        TelegramReplyPoller.syncState(appCtx)
     }
 
     fun removeAppCustomRule(packageName: String) {
         repo.removeAppCustomRule(packageName)
+        TelegramReplyPoller.syncState(appCtx)
+    }
+
+    fun saveChatProfile(id: String?, name: String, chatId: String): Boolean {
+        val cleanChatId = chatId.trim()
+        if (cleanChatId.isEmpty()) return false
+        val cleanName = name.trim().ifEmpty { cleanChatId }
+        repo.upsertChatProfile(
+            ChatProfile(
+                id = id?.trim().orEmpty(),
+                name = cleanName,
+                chatId = cleanChatId
+            )
+        )
+        TelegramReplyPoller.syncState(appCtx)
+        return true
+    }
+
+    fun deleteChatProfile(profileId: String) {
+        repo.deleteChatProfile(profileId)
+        TelegramReplyPoller.syncState(appCtx)
+    }
+
+    fun toggleDefaultProfile(profileId: String) {
+        repo.toggleDefaultProfile(profileId)
+        TelegramReplyPoller.syncState(appCtx)
     }
 
     fun setMessageFormat(format: String) {

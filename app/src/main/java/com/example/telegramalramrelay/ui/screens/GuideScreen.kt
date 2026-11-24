@@ -74,9 +74,9 @@ fun GuideScreen(
     val appVersion = remember {
         try {
             val pi = context.packageManager.getPackageInfo(context.packageName, 0)
-            pi.versionName ?: "2.4.0"
+            pi.versionName ?: "2.5.0"
         } catch (_: Exception) {
-            "2.4.0"
+            "2.5.0"
         }
     }
 
@@ -340,8 +340,10 @@ fun GuideScreen(
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 ExpandableFaqItem(
-                    question = "특정 앱만 다른 텔레그램 채팅방으로 보낼 수 있나요?",
-                    answer = "가능합니다. '앱 선택' 탭에서 체크된 앱 우측의 슬라이더(맞춤 설정) 아이콘을 누르면 해당 앱 전용 Chat ID와 전용 메시지 포맷을 따로 설정할 수 있습니다."
+                    question = "특정 앱만 다른 사람에게 보내거나 2명 이상에게 동시에 보낼 수 있나요?",
+                    answer = "네! 설정 탭의 '수신자 프로필 관리'에서 가족·동료·그룹방을 이름으로 저장해 두면 편하게 관리할 수 있습니다.\n" +
+                        "• 2명 동시 전송(전체): 기본 Chat ID에 쉼표로 여러 ID를 입력하거나, 저장한 프로필 카드에서 '기본 동시전송' 칩을 켜세요.\n" +
+                        "• 앱별 다른 사람/여러 명 지정: '앱 선택' 탭에서 체크된 앱 우측의 슬라이더(맞춤 설정) 아이콘을 눌러 원하는 프로필을 1명 또는 여러 명 선택하면 됩니다."
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 ExpandableFaqItem(

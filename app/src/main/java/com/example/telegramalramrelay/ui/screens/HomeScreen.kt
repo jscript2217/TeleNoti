@@ -65,6 +65,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.telegramalramrelay.data.DeliveryStatus
 import com.example.telegramalramrelay.data.NotificationLogItem
 import com.example.telegramalramrelay.data.ThemeMode
+import com.example.telegramalramrelay.domain.ChatTargetResolver
 import com.example.telegramalramrelay.ui.MainViewModel
 import com.example.telegramalramrelay.ui.components.PermissionWizardDialog
 import com.example.telegramalramrelay.ui.theme.TeleAmberContainerDark
@@ -147,7 +148,15 @@ fun HomeScreen(
 
     val requiredDone = listOf(postNotifGranted, notifAccessEnabled, ignoringBattery).count { it }
     val allCorePermissionsReady = requiredDone == 3
-    val botConfigured = settings.botToken.isNotBlank() && settings.chatId.isNotBlank()
+    val defaultRecipients = remember(
+        settings.chatId,
+        settings.chatProfiles,
+        settings.defaultProfileIds
+    ) {
+        ChatTargetResolver.resolveDefaultRecipients(settings)
+    }
+    val botConfigured = settings.botToken.isNotBlank() &&
+        ChatTargetResolver.hasAnyConfiguredRecipient(settings)
     val keepAliveOn = serviceRunning || settings.backgroundEnabled
 
     val cal = Calendar.getInstance()
@@ -304,7 +313,7 @@ fun HomeScreen(
                 statusColor = if (isDark) TeleAmberDark else TeleAmberLight
                 statusContainerColor = if (isDark) TeleAmberContainerDark.copy(alpha = 0.55f) else TeleAmberContainerLight
                 statusTitle = "봇 미설정 · 대기 중"
-                statusSubtitle = "봇 토큰과 Chat ID를 설정하세요"
+                statusSubtitle = "봇 토큰과 수신 Chat ID(또는 프로필)를 설정하세요"
             }
             !settings.forwardingEnabled -> {
                 statusColor = MaterialTheme.colorScheme.onSurfaceVariant
@@ -478,6 +487,7 @@ fun HomeScreen(
                     StatusRow("오늘 전송된 알림", "${settings.sentToday}개")
 
                     val badges = buildList {
+                        if (defaultRecipients.size >= 2) add("동시 전송 ${defaultRecipients.size}명")
                         if (settings.telegramReplyEnabled && replyPollingActive) add("양방향 답장")
                         if (settings.incomingCallAlertEnabled && readPhoneStateGranted) add("수신 전화 알림")
                         if (settings.imageForwardingEnabled) add("이미지 전송")
@@ -514,23 +524,25 @@ fun HomeScreen(
                     OutlinedButton(
                         onClick = {
                             if (isSendingTest) return@OutlinedButton
-                            if (!botConfigured) {
+                            if (settings.botToken.isBlank() || defaultRecipients.isEmpty()) {
                                 Toast.makeText(
                                     context,
-                                    "먼저 설정 탭에서 봇 토큰과 Chat ID를 저장해 주세요.",
+                                    "먼저 설정 탭에서 봇 토큰과 기본 Chat ID(또는 프로필)를 저장해 주세요.",
                                     Toast.LENGTH_SHORT
                                 ).show()
                                 onNavigateToSettings()
                                 return@OutlinedButton
                             }
                             isSendingTest = true
-                            viewModel.sendTestMessage(settings.botToken, settings.chatId) { ok, msg ->
+                            viewModel.sendTestMessageToDefaultRecipients { okCount, failCount, msg ->
                                 isSendingTest = false
-                                Toast.makeText(
-                                    context,
-                                    if (ok) "텔레그램 테스트 전송 성공!" else "전송 실패: $msg",
-                                    Toast.LENGTH_LONG
-                                ).show()
+                                val feedback = when {
+                                    failCount == 0 && okCount > 1 -> "텔레그램 테스트 전송 성공 (${okCount}명)!"
+                                    failCount == 0 -> "텔레그램 테스트 전송 성공!"
+                                    okCount > 0 -> "일부 전송 성공 (${okCount}명 성공, ${failCount}명 실패): $msg"
+                                    else -> "전송 실패: $msg"
+                                }
+                                Toast.makeText(context, feedback, Toast.LENGTH_LONG).show()
                             }
                         },
                         enabled = !isSendingTest,
@@ -844,11 +856,30 @@ private fun RecentNotificationItem(
                 )
             }
 
-            Text(
-                text = item.timeDisplay,
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
-            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = item.timeDisplay,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+                )
+                if (!item.recipientLabel.isNullOrBlank()) {
+                    Surface(
+                        shape = RoundedCornerShape(5.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
+                    ) {
+                        Text(
+                            text = "→ ${item.recipientLabel}",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                        )
+                    }
+                }
+            }
         }
 
         if (item.status != DeliveryStatus.SENT) {

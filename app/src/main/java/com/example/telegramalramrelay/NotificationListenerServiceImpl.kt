@@ -9,6 +9,7 @@ import com.example.telegramalramrelay.data.DeliveryStatus
 import com.example.telegramalramrelay.data.NotificationLogItem
 import com.example.telegramalramrelay.data.PendingImageStore
 import com.example.telegramalramrelay.data.SettingsRepository
+import com.example.telegramalramrelay.domain.ChatTargetResolver
 import com.example.telegramalramrelay.domain.ExtractedImageSources
 import com.example.telegramalramrelay.domain.FilterDecision
 import com.example.telegramalramrelay.domain.MessageFormatter
@@ -27,7 +28,10 @@ import com.example.telegramalramrelay.worker.RetryDeliveryWorker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -131,10 +135,10 @@ class NotificationListenerServiceImpl : NotificationListenerService() {
             if (!allowedByDedupe) return
 
             val customRule = settings.appCustomRules[pkg]
-            val targetChatId = customRule?.customChatId?.takeIf { it.isNotBlank() } ?: settings.chatId
+            val targetRecipients = ChatTargetResolver.resolveRecipientsForPackage(settings, pkg)
             val template = customRule?.customFormat?.takeIf { it.isNotBlank() } ?: settings.messageFormat
 
-            if (settings.botToken.isBlank() || targetChatId.isBlank()) return
+            if (settings.botToken.isBlank() || targetRecipients.isEmpty()) return
 
             val appName = try {
                 val ai = packageManager.getApplicationInfo(pkg, 0)
@@ -154,7 +158,9 @@ class NotificationListenerServiceImpl : NotificationListenerService() {
             val shouldEnrichLms = settings.lmsEnrichmentEnabled &&
                 SmsMmsEnricher.isMessagingPackage(applicationContext, pkg)
             val imageForwarding = settings.imageForwardingEnabled
-            val logId = UUID.randomUUID().toString()
+            val showRecipientLabel = targetRecipients.size > 1 ||
+                customRule?.hasCustomRecipients == true ||
+                settings.chatProfiles.isNotEmpty()
 
             scope.launch {
                 val enrichment = if (shouldEnrichLms) {
@@ -195,86 +201,100 @@ class NotificationListenerServiceImpl : NotificationListenerService() {
                     packageName = pkg
                 )
 
-                val cachedPath = if (jpegBytes != null) {
-                    PendingImageStore.save(applicationContext, logId, jpegBytes)
-                } else {
-                    null
-                }
+                val retryFlags = coroutineScope {
+                    targetRecipients.map { recipient ->
+                        async {
+                            val logId = UUID.randomUUID().toString()
+                            val cachedPath = if (jpegBytes != null) {
+                                PendingImageStore.save(applicationContext, logId, jpegBytes)
+                            } else {
+                                null
+                            }
 
-                val logItem = NotificationLogItem(
-                    id = logId,
-                    packageName = pkg,
-                    appName = appName,
-                    title = extracted.title,
-                    text = finalText,
-                    formattedMessage = message,
-                    chatId = targetChatId,
-                    timestampMillis = postTime,
-                    timeDisplay = timeStr,
-                    status = DeliveryStatus.PENDING_RETRY,
-                    hasImage = jpegBytes != null,
-                    imageCachePath = cachedPath,
-                    canReply = replyAction != null
-                )
-                repo.addLogItem(logItem)
-
-                val result = if (jpegBytes != null) {
-                    TelegramApi.sendPhotoWithText(
-                        botToken = botToken,
-                        chatId = targetChatId,
-                        photoBytes = jpegBytes,
-                        text = message
-                    )
-                } else {
-                    TelegramApi.sendMessage(
-                        botToken = botToken,
-                        chatId = targetChatId,
-                        text = message
-                    )
-                }
-
-                if (result.success) {
-                    if (replyAction != null && result.messageIds.isNotEmpty()) {
-                        ReplyActionStore.register(
-                            telegramChatId = targetChatId,
-                            telegramMessageIds = result.messageIds,
-                            target = ReplyTarget(
-                                telegramChatId = targetChatId,
+                            val logItem = NotificationLogItem(
+                                id = logId,
                                 packageName = pkg,
                                 appName = appName,
-                                senderTitle = extracted.title,
-                                notificationKey = notifKey,
-                                actionIntent = replyAction.actionIntent,
-                                remoteInputs = replyAction.remoteInputs,
-                                createdAtMillis = System.currentTimeMillis()
+                                title = extracted.title,
+                                text = finalText,
+                                formattedMessage = message,
+                                chatId = recipient.chatId,
+                                timestampMillis = postTime,
+                                timeDisplay = timeStr,
+                                status = DeliveryStatus.PENDING_RETRY,
+                                hasImage = jpegBytes != null,
+                                imageCachePath = cachedPath,
+                                canReply = replyAction != null,
+                                recipientLabel = if (showRecipientLabel) recipient.label else null
                             )
-                        )
-                    }
-                    repo.updateLogStatus(
-                        id = logId,
-                        status = DeliveryStatus.SENT,
-                        errorMessage = null,
-                        incrementSentToday = true,
-                        incrementRetryCount = false,
-                        clearImageCache = true
-                    )
-                } else if (result.retryable) {
-                    repo.updateLogStatus(
-                        id = logId,
-                        status = DeliveryStatus.PENDING_RETRY,
-                        errorMessage = result.message,
-                        incrementSentToday = false,
-                        incrementRetryCount = false
-                    )
+                            repo.addLogItem(logItem)
+
+                            val result = if (jpegBytes != null) {
+                                TelegramApi.sendPhotoWithText(
+                                    botToken = botToken,
+                                    chatId = recipient.chatId,
+                                    photoBytes = jpegBytes,
+                                    text = message
+                                )
+                            } else {
+                                TelegramApi.sendMessage(
+                                    botToken = botToken,
+                                    chatId = recipient.chatId,
+                                    text = message
+                                )
+                            }
+
+                            if (result.success) {
+                                if (replyAction != null && result.messageIds.isNotEmpty()) {
+                                    ReplyActionStore.register(
+                                        telegramChatId = recipient.chatId,
+                                        telegramMessageIds = result.messageIds,
+                                        target = ReplyTarget(
+                                            telegramChatId = recipient.chatId,
+                                            packageName = pkg,
+                                            appName = appName,
+                                            senderTitle = extracted.title,
+                                            notificationKey = notifKey,
+                                            actionIntent = replyAction.actionIntent,
+                                            remoteInputs = replyAction.remoteInputs,
+                                            createdAtMillis = System.currentTimeMillis()
+                                        )
+                                    )
+                                }
+                                repo.updateLogStatus(
+                                    id = logId,
+                                    status = DeliveryStatus.SENT,
+                                    errorMessage = null,
+                                    incrementSentToday = true,
+                                    incrementRetryCount = false,
+                                    clearImageCache = true
+                                )
+                                false
+                            } else if (result.retryable) {
+                                repo.updateLogStatus(
+                                    id = logId,
+                                    status = DeliveryStatus.PENDING_RETRY,
+                                    errorMessage = result.message,
+                                    incrementSentToday = false,
+                                    incrementRetryCount = false
+                                )
+                                true
+                            } else {
+                                repo.updateLogStatus(
+                                    id = logId,
+                                    status = DeliveryStatus.FAILED,
+                                    errorMessage = result.message,
+                                    incrementSentToday = false,
+                                    incrementRetryCount = false
+                                )
+                                false
+                            }
+                        }
+                    }.awaitAll()
+                }
+
+                if (retryFlags.any { it }) {
                     RetryDeliveryWorker.enqueue(applicationContext)
-                } else {
-                    repo.updateLogStatus(
-                        id = logId,
-                        status = DeliveryStatus.FAILED,
-                        errorMessage = result.message,
-                        incrementSentToday = false,
-                        incrementRetryCount = false
-                    )
                 }
             }
         } catch (_: Exception) {

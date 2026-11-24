@@ -112,7 +112,7 @@ object IncomingCallPolicy {
         return settings.forwardingEnabled &&
             settings.incomingCallAlertEnabled &&
             settings.botToken.isNotBlank() &&
-            settings.chatId.isNotBlank() &&
+            ChatTargetResolver.resolveDefaultRecipients(settings).isNotEmpty() &&
             !settings.quietHours.isQuietAt(currentHour, currentMinute)
     }
 }

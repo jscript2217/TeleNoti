@@ -38,7 +38,8 @@ data class NotificationLogItem(
     val emoji: String = "🔔",
     val hasImage: Boolean = false,
     val imageCachePath: String? = null,
-    val canReply: Boolean = false
+    val canReply: Boolean = false,
+    val recipientLabel: String? = null
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
@@ -57,6 +58,7 @@ data class NotificationLogItem(
         if (hasImage) put("hasImage", true)
         if (!imageCachePath.isNullOrBlank()) put("imageCachePath", imageCachePath)
         if (canReply) put("canReply", true)
+        if (!recipientLabel.isNullOrBlank()) put("recipientLabel", recipientLabel)
     }
 
     companion object {
@@ -93,7 +95,8 @@ data class NotificationLogItem(
                 emoji = obj.optString("emoji", "🔔"),
                 hasImage = obj.optBoolean("hasImage", false),
                 imageCachePath = obj.optString("imageCachePath").takeIf { it.isNotBlank() },
-                canReply = obj.optBoolean("canReply", false)
+                canReply = obj.optBoolean("canReply", false),
+                recipientLabel = obj.optString("recipientLabel").takeIf { it.isNotBlank() }
             )
         }
 
@@ -162,13 +165,68 @@ data class KeywordFilterConfig(
     }
 }
 
+data class ChatProfile(
+    val id: String,
+    val name: String,
+    val chatId: String
+) {
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("id", id)
+        put("name", name)
+        put("chatId", chatId)
+    }
+
+    companion object {
+        fun fromJson(obj: JSONObject): ChatProfile? {
+            val cleanChatId = obj.optString("chatId", "").trim()
+            if (cleanChatId.isEmpty()) return null
+            val cleanId = obj.optString("id", "").trim().ifEmpty { "profile_$cleanChatId" }
+            val cleanName = obj.optString("name", "").trim().ifEmpty { cleanChatId }
+            return ChatProfile(
+                id = cleanId,
+                name = cleanName,
+                chatId = cleanChatId
+            )
+        }
+
+        fun parseList(json: String?): List<ChatProfile> {
+            if (json.isNullOrBlank()) return emptyList()
+            return try {
+                val arr = JSONArray(json)
+                val out = mutableListOf<ChatProfile>()
+                val seenIds = HashSet<String>()
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val profile = fromJson(obj) ?: continue
+                    if (seenIds.add(profile.id)) {
+                        out.add(profile)
+                    }
+                }
+                out
+            } catch (_: Exception) {
+                emptyList()
+            }
+        }
+
+        fun toJsonArrayString(profiles: List<ChatProfile>): String {
+            val arr = JSONArray()
+            profiles.forEach { arr.put(it.toJson()) }
+            return arr.toString()
+        }
+    }
+}
+
 data class AppCustomRule(
     val packageName: String,
     val customChatId: String = "",
-    val customFormat: String = ""
+    val customFormat: String = "",
+    val targetProfileIds: List<String> = emptyList()
 ) {
+    val hasCustomRecipients: Boolean
+        get() = targetProfileIds.isNotEmpty() || customChatId.isNotBlank()
+
     val hasCustomizations: Boolean
-        get() = customChatId.isNotBlank() || customFormat.isNotBlank()
+        get() = hasCustomRecipients || customFormat.isNotBlank()
 
     companion object {
         fun parseMap(json: String?): Map<String, AppCustomRule> {
@@ -180,10 +238,22 @@ data class AppCustomRule(
                 while (keys.hasNext()) {
                     val pkg = keys.next()
                     val obj = root.optJSONObject(pkg) ?: continue
+                    val profileIds = mutableListOf<String>()
+                    val seenProfileIds = HashSet<String>()
+                    val idsArr = obj.optJSONArray("targetProfileIds")
+                    if (idsArr != null) {
+                        for (i in 0 until idsArr.length()) {
+                            val pid = idsArr.optString(i, "").trim()
+                            if (pid.isNotEmpty() && seenProfileIds.add(pid)) {
+                                profileIds.add(pid)
+                            }
+                        }
+                    }
                     val rule = AppCustomRule(
                         packageName = pkg,
                         customChatId = obj.optString("customChatId", "").trim(),
-                        customFormat = obj.optString("customFormat", "")
+                        customFormat = obj.optString("customFormat", ""),
+                        targetProfileIds = profileIds
                     )
                     if (rule.hasCustomizations) {
                         out[pkg] = rule
@@ -203,6 +273,9 @@ data class AppCustomRule(
                     JSONObject().apply {
                         put("customChatId", rule.customChatId.trim())
                         put("customFormat", rule.customFormat)
+                        if (rule.targetProfileIds.isNotEmpty()) {
+                            put("targetProfileIds", JSONArray(rule.targetProfileIds))
+                        }
                     }
                 )
             }
@@ -246,5 +319,7 @@ data class TeleNotiSettings(
     val observedPackages: Set<String> = emptySet(),
     val imageForwardingEnabled: Boolean = true,
     val telegramReplyEnabled: Boolean = true,
-    val incomingCallAlertEnabled: Boolean = true
+    val incomingCallAlertEnabled: Boolean = true,
+    val chatProfiles: List<ChatProfile> = emptyList(),
+    val defaultProfileIds: Set<String> = emptySet()
 )

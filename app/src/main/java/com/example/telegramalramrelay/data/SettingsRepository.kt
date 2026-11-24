@@ -2,6 +2,7 @@ package com.example.telegramalramrelay.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.example.telegramalramrelay.domain.ChatTargetResolver
 import com.example.telegramalramrelay.domain.MessageFormatter
 import com.example.telegramalramrelay.domain.NotificationFilter
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -10,6 +11,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import java.util.Calendar
 import java.util.TimeZone
+import java.util.UUID
 
 class SettingsRepository private constructor(context: Context) {
     private val appContext = context.applicationContext
@@ -144,7 +146,13 @@ class SettingsRepository private constructor(context: Context) {
 
     fun setAppCustomRule(rule: AppCustomRule) {
         synchronized(lock) {
-            val cleanRule = rule.copy(customChatId = rule.customChatId.trim())
+            val cleanRule = rule.copy(
+                customChatId = rule.customChatId.trim(),
+                targetProfileIds = rule.targetProfileIds
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                    .distinct()
+            )
             val next = _settings.value.appCustomRules.toMutableMap()
             if (cleanRule.hasCustomizations) {
                 next[cleanRule.packageName] = cleanRule
@@ -163,6 +171,77 @@ class SettingsRepository private constructor(context: Context) {
                 prefs.edit().putString(KEY_APP_CUSTOM_RULES, AppCustomRule.toJsonString(next)).apply()
                 _settings.value = _settings.value.copy(appCustomRules = next)
             }
+        }
+    }
+
+    fun upsertChatProfile(profile: ChatProfile): ChatProfile {
+        synchronized(lock) {
+            val cleanChatId = profile.chatId.trim()
+            val cleanName = profile.name.trim().ifEmpty { cleanChatId }
+            val cleanId = profile.id.trim().ifEmpty { UUID.randomUUID().toString() }
+            val normalized = ChatProfile(id = cleanId, name = cleanName, chatId = cleanChatId)
+
+            val current = _settings.value.chatProfiles
+            val existingIdx = current.indexOfFirst { it.id == cleanId }
+            val next = if (existingIdx >= 0) {
+                current.toMutableList().apply { set(existingIdx, normalized) }
+            } else {
+                current + normalized
+            }
+
+            prefs.edit().putString(KEY_CHAT_PROFILES, ChatProfile.toJsonArrayString(next)).apply()
+            _settings.value = _settings.value.copy(chatProfiles = next)
+            return normalized
+        }
+    }
+
+    fun deleteChatProfile(profileId: String) {
+        synchronized(lock) {
+            val current = _settings.value
+            val nextProfiles = current.chatProfiles.filterNot { it.id == profileId }
+            val nextDefaultIds = current.defaultProfileIds.filterNot { it == profileId }.toSet()
+            val nextRules = LinkedHashMap<String, AppCustomRule>()
+            current.appCustomRules.forEach { (pkg, rule) ->
+                val updatedRule = rule.copy(
+                    targetProfileIds = rule.targetProfileIds.filterNot { it == profileId }
+                )
+                if (updatedRule.hasCustomizations) {
+                    nextRules[pkg] = updatedRule
+                }
+            }
+
+            prefs.edit()
+                .putString(KEY_CHAT_PROFILES, ChatProfile.toJsonArrayString(nextProfiles))
+                .putString(KEY_DEFAULT_PROFILE_IDS, JSONArray(nextDefaultIds.toList()).toString())
+                .putString(KEY_APP_CUSTOM_RULES, AppCustomRule.toJsonString(nextRules))
+                .apply()
+
+            _settings.value = current.copy(
+                chatProfiles = nextProfiles,
+                defaultProfileIds = nextDefaultIds,
+                appCustomRules = nextRules
+            )
+        }
+    }
+
+    fun toggleDefaultProfile(profileId: String) {
+        synchronized(lock) {
+            val current = _settings.value.defaultProfileIds.toMutableSet()
+            if (!current.add(profileId)) {
+                current.remove(profileId)
+            }
+            setDefaultProfileIds(current)
+        }
+    }
+
+    fun setDefaultProfileIds(profileIds: Set<String>) {
+        synchronized(lock) {
+            val validIds = _settings.value.chatProfiles.map { it.id }.toSet()
+            val cleaned = profileIds.filter { it in validIds }.toSet()
+            prefs.edit()
+                .putString(KEY_DEFAULT_PROFILE_IDS, JSONArray(cleaned.toList()).toString())
+                .apply()
+            _settings.value = _settings.value.copy(defaultProfileIds = cleaned)
         }
     }
 
@@ -212,17 +291,7 @@ class SettingsRepository private constructor(context: Context) {
     }
 
     fun getAuthorizedChatIds(): Set<String> {
-        val current = _settings.value
-        val out = LinkedHashSet<String>()
-        if (current.chatId.isNotBlank()) {
-            out.add(current.chatId.trim())
-        }
-        current.appCustomRules.values.forEach { rule ->
-            if (rule.customChatId.isNotBlank()) {
-                out.add(rule.customChatId.trim())
-            }
-        }
-        return out
+        return ChatTargetResolver.collectAllAuthorizedChatIds(_settings.value)
     }
 
     fun recordObservedPackage(packageName: String) {
@@ -392,6 +461,22 @@ class SettingsRepository private constructor(context: Context) {
             } catch (_: Exception) {}
         }
 
+        val chatProfiles = ChatProfile.parseList(prefs.getString(KEY_CHAT_PROFILES, null))
+        val validProfileIds = chatProfiles.map { it.id }.toSet()
+        val defaultProfileIds = linkedSetOf<String>()
+        val defaultIdsJson = prefs.getString(KEY_DEFAULT_PROFILE_IDS, null)
+        if (!defaultIdsJson.isNullOrBlank()) {
+            try {
+                val arr = JSONArray(defaultIdsJson)
+                for (i in 0 until arr.length()) {
+                    val pid = arr.optString(i, "").trim()
+                    if (pid.isNotEmpty() && pid in validProfileIds) {
+                        defaultProfileIds.add(pid)
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+
         return TeleNotiSettings(
             botToken = tokenStore.getBotToken(),
             chatId = tokenStore.getChatId(),
@@ -430,7 +515,9 @@ class SettingsRepository private constructor(context: Context) {
             observedPackages = observed.toSet(),
             imageForwardingEnabled = prefs.getBoolean(KEY_IMAGE_FORWARDING_ENABLED, true),
             telegramReplyEnabled = prefs.getBoolean(KEY_TELEGRAM_REPLY_ENABLED, true),
-            incomingCallAlertEnabled = prefs.getBoolean(KEY_INCOMING_CALL_ALERT_ENABLED, true)
+            incomingCallAlertEnabled = prefs.getBoolean(KEY_INCOMING_CALL_ALERT_ENABLED, true),
+            chatProfiles = chatProfiles,
+            defaultProfileIds = defaultProfileIds.toSet()
         )
     }
 
@@ -471,6 +558,8 @@ class SettingsRepository private constructor(context: Context) {
         const val KEY_TELEGRAM_REPLY_ENABLED = "telegram_reply_enabled"
         const val KEY_INCOMING_CALL_ALERT_ENABLED = "incoming_call_alert_enabled"
         const val KEY_LAST_TELEGRAM_UPDATE_ID = "last_telegram_update_id"
+        const val KEY_CHAT_PROFILES = "chat_profiles"
+        const val KEY_DEFAULT_PROFILE_IDS = "default_profile_ids"
 
         @Volatile
         private var instance: SettingsRepository? = null

@@ -20,7 +20,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
@@ -64,7 +66,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.telegramalramrelay.data.AppCustomRule
+import com.example.telegramalramrelay.data.ChatProfile
+import com.example.telegramalramrelay.domain.ChatTargetResolver
 import com.example.telegramalramrelay.domain.MessageFormatter
+import com.example.telegramalramrelay.domain.ResolvedRecipient
 import com.example.telegramalramrelay.ui.InstalledAppEntry
 import com.example.telegramalramrelay.ui.MainViewModel
 import com.example.telegramalramrelay.util.AppIconCache
@@ -123,10 +128,19 @@ fun AppSelectorScreen(viewModel: MainViewModel) {
 
     editingApp?.let { target ->
         val existingRule = settings.appCustomRules[target.packageName]
+        val defaultRecipients = remember(
+            settings.chatId,
+            settings.chatProfiles,
+            settings.defaultProfileIds
+        ) {
+            ChatTargetResolver.resolveDefaultRecipients(settings)
+        }
         AppCustomRuleDialog(
             appName = target.name,
             packageName = target.packageName,
             initialRule = existingRule ?: AppCustomRule(target.packageName),
+            profiles = settings.chatProfiles,
+            defaultRecipients = defaultRecipients,
             onDismiss = { editingApp = null },
             onSave = { rule ->
                 viewModel.setAppCustomRule(rule)
@@ -340,11 +354,22 @@ fun AppSelectorScreen(viewModel: MainViewModel) {
                     val enabled = app.packageName in settings.selectedPackages
                     val isObserved = app.packageName in settings.observedPackages
                     val customRule = settings.appCustomRules[app.packageName]
+                    val customRecipientBadge = if (customRule?.hasCustomRecipients == true) {
+                        val resolved = ChatTargetResolver.resolveRecipientsForPackage(settings, app.packageName)
+                        ChatTargetResolver.formatRecipientSummary(resolved).takeIf { it.isNotEmpty() }
+                            ?.let { "→ $it" }
+                    } else {
+                        null
+                    }
+                    val hasCustomFormatOnly = customRule != null &&
+                        customRule.customFormat.isNotBlank() &&
+                        customRecipientBadge == null
                     AppItem(
                         app = app,
                         enabled = enabled,
                         isObserved = isObserved,
                         hasCustomRule = customRule?.hasCustomizations == true,
+                        customBadgeText = customRecipientBadge ?: if (hasCustomFormatOnly) "맞춤 포맷" else null,
                         onToggle = { viewModel.togglePackage(app.packageName) },
                         onOpenCustomRule = { editingApp = app }
                     )
@@ -376,6 +401,7 @@ private fun AppItem(
     enabled: Boolean,
     isObserved: Boolean,
     hasCustomRule: Boolean,
+    customBadgeText: String?,
     onToggle: () -> Unit,
     onOpenCustomRule: () -> Unit
 ) {
@@ -450,9 +476,9 @@ private fun AppItem(
                         textColor = MaterialTheme.colorScheme.onTertiaryContainer
                     )
                 }
-                if (hasCustomRule) {
+                if (customBadgeText != null) {
                     SmallTagBadge(
-                        text = "맞춤",
+                        text = customBadgeText,
                         bgColor = MaterialTheme.colorScheme.primaryContainer,
                         textColor = MaterialTheme.colorScheme.onPrimaryContainer
                     )
@@ -561,17 +587,42 @@ private fun ManualPackageDialog(
     )
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AppCustomRuleDialog(
     appName: String,
     packageName: String,
     initialRule: AppCustomRule,
+    profiles: List<ChatProfile>,
+    defaultRecipients: List<ResolvedRecipient>,
     onDismiss: () -> Unit,
     onSave: (AppCustomRule) -> Unit,
     onReset: () -> Unit
 ) {
+    var selectedProfileIds by remember { mutableStateOf(initialRule.targetProfileIds.toSet()) }
     var customChatId by remember { mutableStateOf(initialRule.customChatId) }
     var customFormat by remember { mutableStateOf(initialRule.customFormat) }
+
+    val previewRecipients = remember(profiles, selectedProfileIds, customChatId) {
+        val out = mutableListOf<ResolvedRecipient>()
+        val seen = HashSet<String>()
+        val byChatId = profiles.associateBy { it.chatId.trim() }
+        for (p in profiles) {
+            if (p.id in selectedProfileIds) {
+                val cid = p.chatId.trim()
+                if (cid.isNotEmpty() && seen.add(cid)) {
+                    out.add(ResolvedRecipient(cid, p.name))
+                }
+            }
+        }
+        for (directId in ChatTargetResolver.parseChatIds(customChatId)) {
+            if (seen.add(directId)) {
+                val label = byChatId[directId]?.name?.takeIf { it.isNotBlank() } ?: directId
+                out.add(ResolvedRecipient(directId, label))
+            }
+        }
+        out
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -586,20 +637,84 @@ private fun AppCustomRuleDialog(
             }
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 Text(
-                    text = "비워두면 전역 기본 설정(기본 Chat ID 및 포맷)을 따릅니다.",
+                    text = "받을 프로필을 여러 명 고르거나 Chat ID를 쉼표(,)로 구분해 입력하면 동시에 전송됩니다. 모두 비우면 전역 기본 설정을 따릅니다.",
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                Text(
+                    text = "수신자 프로필 선택 (다중 선택 가능)",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                if (profiles.isEmpty()) {
+                    Text(
+                        text = "등록된 프로필이 없습니다. 설정 탭 > '수신자 프로필 관리'에서 추가하면 여기서 터치로 고를 수 있습니다.",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        profiles.forEach { profile ->
+                            val isSelected = profile.id in selectedProfileIds
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = {
+                                    selectedProfileIds = if (isSelected) {
+                                        selectedProfileIds - profile.id
+                                    } else {
+                                        selectedProfileIds + profile.id
+                                    }
+                                },
+                                label = { Text(profile.name, fontSize = 12.sp) }
+                            )
+                        }
+                    }
+                }
+
                 OutlinedTextField(
                     value = customChatId,
                     onValueChange = { customChatId = it },
-                    label = { Text("앱 전용 Chat ID") },
-                    placeholder = { Text("예: -1001234567890") },
+                    label = { Text("추가 / 직접 입력 Chat ID (쉼표로 여러 명 가능)") },
+                    placeholder = { Text("예: -1001234567890, 987654321") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = if (previewRecipients.isEmpty()) {
+                            val defaultNames = defaultRecipients.joinToString(", ") { it.label }
+                            if (defaultNames.isNotEmpty()) {
+                                "전송 대상: 전역 기본 설정 따름 ($defaultNames)"
+                            } else {
+                                "전송 대상: 전역 기본 설정 따름"
+                            }
+                        } else {
+                            "전송 대상 (${previewRecipients.size}명" +
+                                (if (previewRecipients.size >= 2) " 동시 전송" else "") +
+                                "): ${previewRecipients.joinToString(", ") { it.label }}"
+                        },
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(8.dp)
+                    )
+                }
+
                 OutlinedTextField(
                     value = customFormat,
                     onValueChange = { customFormat = it },
@@ -611,7 +726,7 @@ private fun AppCustomRuleDialog(
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(110.dp)
+                        .height(100.dp)
                 )
                 TextButton(
                     onClick = { customFormat = MessageFormatter.DEFAULT_FORMAT },
@@ -624,11 +739,13 @@ private fun AppCustomRuleDialog(
         confirmButton = {
             TextButton(
                 onClick = {
+                    val orderedIds = profiles.map { it.id }.filter { it in selectedProfileIds }
                     onSave(
                         AppCustomRule(
                             packageName = packageName,
                             customChatId = customChatId.trim(),
-                            customFormat = customFormat
+                            customFormat = customFormat,
+                            targetProfileIds = orderedIds
                         )
                     )
                 }

@@ -13,6 +13,7 @@ import com.example.telegramalramrelay.data.DeliveryStatus
 import com.example.telegramalramrelay.data.NotificationLogItem
 import com.example.telegramalramrelay.data.SettingsRepository
 import com.example.telegramalramrelay.domain.CallEventDecision
+import com.example.telegramalramrelay.domain.ChatTargetResolver
 import com.example.telegramalramrelay.domain.INCOMING_CALL_PACKAGE
 import com.example.telegramalramrelay.domain.IncomingCallFormatter
 import com.example.telegramalramrelay.domain.IncomingCallPolicy
@@ -24,6 +25,9 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -146,6 +150,11 @@ object IncomingCallDispatcher {
             return
         }
 
+        val targetRecipients = ChatTargetResolver.resolveDefaultRecipients(settings)
+        if (settings.botToken.isBlank() || targetRecipients.isEmpty()) {
+            return
+        }
+
         val contactName = lookupContactNameIfAllowed(appCtx, rawNumber)
         val (title, text) = IncomingCallFormatter.buildCallerDisplay(
             contactName = contactName,
@@ -166,72 +175,91 @@ object IncomingCallDispatcher {
             time = timeStr
         )
 
-        val logId = UUID.randomUUID().toString()
-        val logItem = NotificationLogItem(
-            id = logId,
-            packageName = INCOMING_CALL_PACKAGE,
-            appName = "수신 전화",
-            title = title,
-            text = text,
-            formattedMessage = message,
-            chatId = settings.chatId,
-            timestampMillis = nowMillis,
-            timeDisplay = timeStr,
-            status = DeliveryStatus.PENDING_RETRY,
-            emoji = "📞"
-        )
-        repo.addLogItem(logItem)
-
-        val result = withTimeoutOrNull(DELIVERY_TIMEOUT_MS) {
-            TelegramApi.sendMessage(
-                botToken = settings.botToken,
-                chatId = settings.chatId,
-                text = message
+        val showRecipientLabel = targetRecipients.size > 1 || settings.chatProfiles.isNotEmpty()
+        val entries = targetRecipients.map { recipient ->
+            val logId = UUID.randomUUID().toString()
+            val logItem = NotificationLogItem(
+                id = logId,
+                packageName = INCOMING_CALL_PACKAGE,
+                appName = "수신 전화",
+                title = title,
+                text = text,
+                formattedMessage = message,
+                chatId = recipient.chatId,
+                timestampMillis = nowMillis,
+                timeDisplay = timeStr,
+                status = DeliveryStatus.PENDING_RETRY,
+                emoji = "📞",
+                recipientLabel = if (showRecipientLabel) recipient.label else null
             )
+            repo.addLogItem(logItem)
+            recipient to logId
         }
 
-        when {
-            result == null -> {
-                repo.updateLogStatus(
-                    id = logId,
-                    status = DeliveryStatus.PENDING_RETRY,
-                    errorMessage = "전송 시간 초과 (백그라운드 재시도 대기)",
-                    incrementSentToday = false,
-                    incrementRetryCount = false
-                )
-                RetryDeliveryWorker.enqueue(appCtx)
-            }
+        val retryFlags = withTimeoutOrNull(DELIVERY_TIMEOUT_MS) {
+            coroutineScope {
+                entries.map { (recipient, logId) ->
+                    async {
+                        val result = TelegramApi.sendMessage(
+                            botToken = settings.botToken,
+                            chatId = recipient.chatId,
+                            text = message
+                        )
+                        when {
+                            result.success -> {
+                                repo.updateLogStatus(
+                                    id = logId,
+                                    status = DeliveryStatus.SENT,
+                                    errorMessage = null,
+                                    incrementSentToday = true,
+                                    incrementRetryCount = false
+                                )
+                                false
+                            }
 
-            result.success -> {
-                repo.updateLogStatus(
-                    id = logId,
-                    status = DeliveryStatus.SENT,
-                    errorMessage = null,
-                    incrementSentToday = true,
-                    incrementRetryCount = false
-                )
-            }
+                            result.retryable -> {
+                                repo.updateLogStatus(
+                                    id = logId,
+                                    status = DeliveryStatus.PENDING_RETRY,
+                                    errorMessage = result.message,
+                                    incrementSentToday = false,
+                                    incrementRetryCount = false
+                                )
+                                true
+                            }
 
-            result.retryable -> {
-                repo.updateLogStatus(
-                    id = logId,
-                    status = DeliveryStatus.PENDING_RETRY,
-                    errorMessage = result.message,
-                    incrementSentToday = false,
-                    incrementRetryCount = false
-                )
-                RetryDeliveryWorker.enqueue(appCtx)
+                            else -> {
+                                repo.updateLogStatus(
+                                    id = logId,
+                                    status = DeliveryStatus.FAILED,
+                                    errorMessage = result.message,
+                                    incrementSentToday = false,
+                                    incrementRetryCount = false
+                                )
+                                false
+                            }
+                        }
+                    }
+                }.awaitAll()
             }
+        }
 
-            else -> {
-                repo.updateLogStatus(
-                    id = logId,
-                    status = DeliveryStatus.FAILED,
-                    errorMessage = result.message,
-                    incrementSentToday = false,
-                    incrementRetryCount = false
-                )
+        if (retryFlags == null) {
+            val snapshotById = repo.currentSettings().recentNotifications.associateBy { it.id }
+            entries.forEach { (_, logId) ->
+                if (snapshotById[logId]?.status == DeliveryStatus.PENDING_RETRY) {
+                    repo.updateLogStatus(
+                        id = logId,
+                        status = DeliveryStatus.PENDING_RETRY,
+                        errorMessage = "전송 시간 초과 (백그라운드 재시도 대기)",
+                        incrementSentToday = false,
+                        incrementRetryCount = false
+                    )
+                }
             }
+            RetryDeliveryWorker.enqueue(appCtx)
+        } else if (retryFlags.any { it }) {
+            RetryDeliveryWorker.enqueue(appCtx)
         }
     }
 
