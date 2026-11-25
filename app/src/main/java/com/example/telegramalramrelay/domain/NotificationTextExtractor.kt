@@ -13,8 +13,6 @@ data class ExtractedNotificationContent(
 )
 
 object NotificationTextExtractor {
-    private const val MAX_MESSAGING_LINES = 5
-
     fun extractFromNotification(
         @Suppress("UNUSED_PARAMETER") context: Context,
         packageName: String,
@@ -95,29 +93,64 @@ object NotificationTextExtractor {
         val nonBlankMessaging = messagingMessages?.map { it.trim() }?.filter { it.isNotEmpty() }.orEmpty()
         val nonBlankLines = textLines?.map { it.trim() }?.filter { it.isNotEmpty() }.orEmpty()
         val trimmedBigText = bigText?.trim()?.takeIf { it.isNotEmpty() }
-        val messagingJoined = if (nonBlankMessaging.isNotEmpty()) {
-            nonBlankMessaging.takeLast(MAX_MESSAGING_LINES).joinToString("\n")
-        } else {
-            null
-        }
+        val latestMessaging = nonBlankMessaging.lastOrNull()
 
-        val resolvedText = when {
-            messagingJoined != null && trimmedBigText != null -> {
-                if (trimmedBigText.length > messagingJoined.length) trimmedBigText else messagingJoined
+        val rawResolvedText = when {
+            latestMessaging != null && trimmedBigText != null -> {
+                // Prefer bigText only for single-message notifications (e.g. long LMS);
+                // multi-message MessagingStyle stacks would otherwise pull older unread history.
+                if (nonBlankMessaging.size == 1 && trimmedBigText.length > latestMessaging.length) {
+                    trimmedBigText
+                } else {
+                    latestMessaging
+                }
             }
-            messagingJoined != null -> messagingJoined
+            latestMessaging != null -> latestMessaging
             trimmedBigText != null -> trimmedBigText
-            nonBlankLines.isNotEmpty() -> nonBlankLines.joinToString("\n")
+            nonBlankLines.isNotEmpty() -> nonBlankLines.last()
             !text.isNullOrBlank() -> text.trim()
             !subText.isNullOrBlank() -> subText.trim()
             !tickerText.isNullOrBlank() -> tickerText.trim()
             else -> ""
         }
 
+        val resolvedText = stripRedundantSenderPrefix(rawResolvedText, resolvedTitle)
+
         return ExtractedNotificationContent(
             title = resolvedTitle,
             text = resolvedText
         )
+    }
+
+    internal fun isSameSenderAsTitle(sender: String, title: String): Boolean {
+        val cleanSender = sender.trim()
+        val cleanTitle = title.trim()
+        if (cleanSender.isEmpty() || cleanTitle.isEmpty()) return false
+        if (cleanSender.equals(cleanTitle, ignoreCase = true)) return true
+
+        val normalizedSender = IncomingCallFormatter.normalizeForKey(cleanSender)
+        val normalizedTitle = IncomingCallFormatter.normalizeForKey(cleanTitle)
+        return normalizedSender.length >= 7 &&
+            normalizedTitle.length >= 7 &&
+            normalizedSender == normalizedTitle
+    }
+
+    internal fun stripRedundantSenderPrefix(text: String, title: String): String {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return trimmed
+
+        val firstNewlineIdx = trimmed.indexOf('\n')
+        val firstLine = if (firstNewlineIdx >= 0) trimmed.substring(0, firstNewlineIdx) else trimmed
+        val colonIdx = firstLine.indexOf(':')
+        if (colonIdx <= 0) return trimmed
+
+        val prefix = firstLine.substring(0, colonIdx)
+        if (!isSameSenderAsTitle(prefix, title)) return trimmed
+
+        val afterColonOnFirstLine = firstLine.substring(colonIdx + 1).trimStart()
+        val remainingLines = if (firstNewlineIdx >= 0) trimmed.substring(firstNewlineIdx) else ""
+        val stripped = (afterColonOnFirstLine + remainingLines).trim()
+        return if (stripped.isNotEmpty()) stripped else trimmed
     }
 
     private fun extractRawExtraMessages(extras: Bundle?): List<String> {

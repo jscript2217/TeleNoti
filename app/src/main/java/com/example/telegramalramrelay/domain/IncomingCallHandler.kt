@@ -138,20 +138,28 @@ class IncomingCallStateTracker(
     private var lastNotifiedAtMillis = 0L
 
     fun onRinging(
-        hasNumberExtra: Boolean,
+        @Suppress("UNUSED_PARAMETER") hasNumberExtra: Boolean,
         rawNumber: String?,
         hasCallLogPermission: Boolean,
         nowMillis: Long
     ): CallEventDecision = synchronized(lock) {
-        if (!hasNumberExtra && hasCallLogPermission) {
+        val cleanNumber = rawNumber?.trim()?.takeIf { it.isNotEmpty() }
+        if (cleanNumber == null) {
             if (isRingingSessionActive && (nowMillis - lastNotifiedAtMillis) in 0 until dedupeWindowMs) {
                 return CallEventDecision.Ignore
             }
-            awaitingNumber = true
-            return CallEventDecision.WaitForNumber
+            if (hasCallLogPermission) {
+                awaitingNumber = true
+                return CallEventDecision.WaitForNumber
+            }
+            awaitingNumber = false
+            isRingingSessionActive = true
+            lastNotifiedNormalized = ""
+            lastNotifiedAtMillis = nowMillis
+            return CallEventDecision.SendNow(null)
         }
 
-        val normalized = IncomingCallFormatter.normalizeForKey(rawNumber)
+        val normalized = IncomingCallFormatter.normalizeForKey(cleanNumber)
         if (isRingingSessionActive &&
             normalized == lastNotifiedNormalized &&
             (nowMillis - lastNotifiedAtMillis) in 0 until dedupeWindowMs
@@ -164,7 +172,7 @@ class IncomingCallStateTracker(
         isRingingSessionActive = true
         lastNotifiedNormalized = normalized
         lastNotifiedAtMillis = nowMillis
-        return CallEventDecision.SendNow(rawNumber?.trim()?.takeIf { it.isNotEmpty() })
+        return CallEventDecision.SendNow(cleanNumber)
     }
 
     fun onFallbackTimeout(nowMillis: Long): CallEventDecision = synchronized(lock) {

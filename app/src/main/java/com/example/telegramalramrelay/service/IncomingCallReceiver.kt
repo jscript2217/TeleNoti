@@ -39,8 +39,8 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 
 object IncomingCallDispatcher {
-    private const val WAIT_FOR_NUMBER_DELAY_MS = 350L
-    private const val DELIVERY_TIMEOUT_MS = 8_000L
+    private const val WAIT_FOR_NUMBER_DELAY_MS = 1_500L
+    private const val DELIVERY_TIMEOUT_MS = 7_500L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val tracker = IncomingCallStateTracker()
@@ -68,6 +68,10 @@ object IncomingCallDispatcher {
 
             CallEventDecision.WaitForNumber -> {
                 synchronized(waitLock) {
+                    if (pendingWaitJob?.isActive == true) {
+                        finishOnce()
+                        return
+                    }
                     cancelPendingWaitLocked()
                     pendingWaitFinish = finishOnce
                     var jobRef: Job? = null

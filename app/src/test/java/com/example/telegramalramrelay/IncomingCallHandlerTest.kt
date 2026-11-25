@@ -213,5 +213,45 @@ class IncomingCallHandlerTest {
                 nowMillis = 7_000L
             )
         )
+
+        // 7. Regression: One UI / Android 15 broadcast with hasNumberExtra=true and null/empty number
+        // must wait instead of firing a duplicate "발신번호 표시 제한" alert before the real number arrives.
+        tracker.onIdle()
+        assertEquals(
+            CallEventDecision.WaitForNumber,
+            tracker.onRinging(
+                hasNumberExtra = true,
+                rawNumber = null,
+                hasCallLogPermission = true,
+                nowMillis = 8_000L
+            )
+        )
+        assertEquals(
+            CallEventDecision.WaitForNumber,
+            tracker.onRinging(
+                hasNumberExtra = true,
+                rawNumber = "   ",
+                hasCallLogPermission = true,
+                nowMillis = 8_050L
+            )
+        )
+        assertEquals(
+            CallEventDecision.SendNow("010-4669-8599"),
+            tracker.onRinging(
+                hasNumberExtra = true,
+                rawNumber = "010-4669-8599",
+                hasCallLogPermission = true,
+                nowMillis = 8_300L
+            )
+        )
+        assertEquals(
+            CallEventDecision.Ignore,
+            tracker.onRinging(
+                hasNumberExtra = true,
+                rawNumber = "",
+                hasCallLogPermission = true,
+                nowMillis = 8_400L
+            )
+        )
     }
 }
