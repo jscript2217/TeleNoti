@@ -227,67 +227,71 @@ class NotificationListenerServiceImpl : NotificationListenerService() {
                                 canReply = replyAction != null,
                                 recipientLabel = if (showRecipientLabel) recipient.label else null
                             )
-                            repo.addLogItem(logItem)
+                            repo.addLogItem(logItem, claimImmediately = true)
 
-                            val result = if (jpegBytes != null) {
-                                TelegramApi.sendPhotoWithText(
-                                    botToken = botToken,
-                                    chatId = recipient.chatId,
-                                    photoBytes = jpegBytes,
-                                    text = message
-                                )
-                            } else {
-                                TelegramApi.sendMessage(
-                                    botToken = botToken,
-                                    chatId = recipient.chatId,
-                                    text = message
-                                )
-                            }
-
-                            if (result.success) {
-                                if (replyAction != null && result.messageIds.isNotEmpty()) {
-                                    ReplyActionStore.register(
-                                        telegramChatId = recipient.chatId,
-                                        telegramMessageIds = result.messageIds,
-                                        target = ReplyTarget(
-                                            telegramChatId = recipient.chatId,
-                                            packageName = pkg,
-                                            appName = appName,
-                                            senderTitle = extracted.title,
-                                            notificationKey = notifKey,
-                                            actionIntent = replyAction.actionIntent,
-                                            remoteInputs = replyAction.remoteInputs,
-                                            createdAtMillis = System.currentTimeMillis()
-                                        )
+                            try {
+                                val result = if (jpegBytes != null) {
+                                    TelegramApi.sendPhotoWithText(
+                                        botToken = botToken,
+                                        chatId = recipient.chatId,
+                                        photoBytes = jpegBytes,
+                                        text = message
+                                    )
+                                } else {
+                                    TelegramApi.sendMessage(
+                                        botToken = botToken,
+                                        chatId = recipient.chatId,
+                                        text = message
                                     )
                                 }
-                                repo.updateLogStatus(
-                                    id = logId,
-                                    status = DeliveryStatus.SENT,
-                                    errorMessage = null,
-                                    incrementSentToday = true,
-                                    incrementRetryCount = false,
-                                    clearImageCache = true
-                                )
-                                false
-                            } else if (result.retryable) {
-                                repo.updateLogStatus(
-                                    id = logId,
-                                    status = DeliveryStatus.PENDING_RETRY,
-                                    errorMessage = result.message,
-                                    incrementSentToday = false,
-                                    incrementRetryCount = false
-                                )
-                                true
-                            } else {
-                                repo.updateLogStatus(
-                                    id = logId,
-                                    status = DeliveryStatus.FAILED,
-                                    errorMessage = result.message,
-                                    incrementSentToday = false,
-                                    incrementRetryCount = false
-                                )
-                                false
+
+                                if (result.success) {
+                                    if (replyAction != null && result.messageIds.isNotEmpty()) {
+                                        ReplyActionStore.register(
+                                            telegramChatId = recipient.chatId,
+                                            telegramMessageIds = result.messageIds,
+                                            target = ReplyTarget(
+                                                telegramChatId = recipient.chatId,
+                                                packageName = pkg,
+                                                appName = appName,
+                                                senderTitle = extracted.title,
+                                                notificationKey = notifKey,
+                                                actionIntent = replyAction.actionIntent,
+                                                remoteInputs = replyAction.remoteInputs,
+                                                createdAtMillis = System.currentTimeMillis()
+                                            )
+                                        )
+                                    }
+                                    repo.updateLogStatus(
+                                        id = logId,
+                                        status = DeliveryStatus.SENT,
+                                        errorMessage = null,
+                                        incrementSentToday = true,
+                                        incrementRetryCount = false,
+                                        clearImageCache = true
+                                    )
+                                    false
+                                } else if (result.retryable) {
+                                    repo.updateLogStatus(
+                                        id = logId,
+                                        status = DeliveryStatus.PENDING_RETRY,
+                                        errorMessage = result.message,
+                                        incrementSentToday = false,
+                                        incrementRetryCount = false
+                                    )
+                                    true
+                                } else {
+                                    repo.updateLogStatus(
+                                        id = logId,
+                                        status = DeliveryStatus.FAILED,
+                                        errorMessage = result.message,
+                                        incrementSentToday = false,
+                                        incrementRetryCount = false
+                                    )
+                                    false
+                                }
+                            } finally {
+                                repo.releaseLogDeliveryClaim(logId)
                             }
                         }
                     }.awaitAll()

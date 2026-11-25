@@ -1,6 +1,7 @@
 package com.example.telegramalramrelay.ui.screens
 
 import android.app.NotificationManager
+import android.os.Build
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -137,18 +138,25 @@ fun BotSettingsScreen(
         )
     }
 
-    // Check notification channel disabled dialog
-    val notifManager = context.getSystemService(NotificationManager::class.java)
+    // Check notification channel disabled dialog (API 26+)
     val channel = remember {
-        try {
-            notifManager?.getNotificationChannel(AppKeepAliveService.CHANNEL_ID)
-        } catch (_: Exception) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                context.getSystemService(NotificationManager::class.java)
+                    ?.getNotificationChannel(AppKeepAliveService.CHANNEL_ID)
+            } catch (_: Exception) {
+                null
+            }
+        } else {
             null
         }
     }
     var showChannelDialog by remember { mutableStateOf(false) }
     LaunchedEffect(channel) {
-        if (channel != null && channel.importance == NotificationManager.IMPORTANCE_NONE) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            channel != null &&
+            channel.importance == NotificationManager.IMPORTANCE_NONE
+        ) {
             showChannelDialog = true
         }
     }

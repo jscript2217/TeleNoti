@@ -46,7 +46,9 @@ object TelegramApi {
         chatId: String,
         text: String,
         parseMode: String? = null,
-        replyToMessageId: Long? = null
+        replyToMessageId: Long? = null,
+        connectTimeoutMs: Int = 15000,
+        readTimeoutMs: Int = 15000
     ): TelegramResult = withContext(Dispatchers.IO) {
         val validationError = validateCredentials(botToken, chatId)
         if (validationError != null) return@withContext validationError
@@ -81,7 +83,9 @@ object TelegramApi {
             val chunkResult = executePost(
                 url = url,
                 contentType = "application/json; charset=UTF-8",
-                bodyBytes = payload.toByteArray(Charsets.UTF_8)
+                bodyBytes = payload.toByteArray(Charsets.UTF_8),
+                connectTimeoutMs = connectTimeoutMs,
+                readTimeoutMs = readTimeoutMs
             )
             if (!chunkResult.success) {
                 return@withContext chunkResult
@@ -104,7 +108,9 @@ object TelegramApi {
         chatId: String,
         messageId: Long,
         text: String,
-        parseMode: String? = null
+        parseMode: String? = null,
+        connectTimeoutMs: Int = 15000,
+        readTimeoutMs: Int = 15000
     ): TelegramResult = withContext(Dispatchers.IO) {
         val validationError = validateCredentials(botToken, chatId)
         if (validationError != null) return@withContext validationError
@@ -140,7 +146,9 @@ object TelegramApi {
         executePost(
             url = url,
             contentType = "application/json; charset=UTF-8",
-            bodyBytes = payload.toByteArray(Charsets.UTF_8)
+            bodyBytes = payload.toByteArray(Charsets.UTF_8),
+            connectTimeoutMs = connectTimeoutMs,
+            readTimeoutMs = readTimeoutMs
         ) { code, resp ->
             parseEditMessageResponse(code, resp, fallbackMessageId = messageId)
         }

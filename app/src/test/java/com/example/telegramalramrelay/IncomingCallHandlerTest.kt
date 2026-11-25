@@ -360,4 +360,56 @@ class IncomingCallHandlerTest {
             )
         )
     }
+
+    @Test
+    fun `delayed Broadcast 2 after fallback and immediate onOffhook still upgrades in-place within dedupeWindow`() {
+        val tracker = IncomingCallStateTracker(dedupeWindowMs = 15_000L)
+
+        // 1. Broadcast #1 without number waits
+        assertEquals(
+            CallEventDecision.WaitForNumber(sessionId = 1L),
+            tracker.onRinging(
+                hasNumberExtra = false,
+                rawNumber = null,
+                hasCallLogPermission = true,
+                nowMillis = 1_000L
+            )
+        )
+        // 2. Timeout sends fallback alert
+        assertEquals(
+            CallEventDecision.SendNow(null, sessionId = 1L, isUpgradeFromFallback = false),
+            tracker.onFallbackTimeout(nowMillis = 5_500L, expectedSessionId = 1L)
+        )
+        // 3. User answers immediately while fallback -> offhook keeps fallback upgrade state
+        tracker.onOffhook()
+        assertEquals(
+            CallEventDecision.SendNow("010-5601-5690", sessionId = 1L, isUpgradeFromFallback = true),
+            tracker.onRinging(
+                hasNumberExtra = true,
+                rawNumber = "010-5601-5690",
+                hasCallLogPermission = true,
+                nowMillis = 6_000L
+            )
+        )
+        // Duplicate same-number broadcast stays ignored
+        assertEquals(
+            CallEventDecision.Ignore,
+            tracker.onRinging(
+                hasNumberExtra = true,
+                rawNumber = "010-5601-5690",
+                hasCallLogPermission = true,
+                nowMillis = 6_100L
+            )
+        )
+        // 4. Subsequent call after dedupeWindow opens fresh non-upgrade session
+        assertEquals(
+            CallEventDecision.SendNow("010-9999-8888", sessionId = 2L, isUpgradeFromFallback = false),
+            tracker.onRinging(
+                hasNumberExtra = true,
+                rawNumber = "010-9999-8888",
+                hasCallLogPermission = true,
+                nowMillis = 25_000L
+            )
+        )
+    }
 }

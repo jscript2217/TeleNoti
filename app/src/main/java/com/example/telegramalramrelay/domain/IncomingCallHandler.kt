@@ -244,7 +244,6 @@ class IncomingCallStateTracker(
 
     fun onOffhook() = synchronized(lock) {
         awaitingNumber = false
-        fallbackSentForSession = false
     }
 
     fun onIdle() = synchronized(lock) {

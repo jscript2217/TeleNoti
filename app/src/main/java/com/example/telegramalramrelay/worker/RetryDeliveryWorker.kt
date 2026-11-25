@@ -31,71 +31,78 @@ class RetryDeliveryWorker(
         var needsRetry = false
 
         for (item in pending) {
-            val targetChatId = item.chatId.ifBlank { settings.chatId }
-            if (targetChatId.isBlank()) {
-                repo.updateLogStatus(
-                    id = item.id,
-                    status = DeliveryStatus.FAILED,
-                    errorMessage = "Chat ID가 설정되지 않았습니다.",
-                    incrementSentToday = false,
-                    incrementRetryCount = false
-                )
+            if (!repo.tryClaimLogForDelivery(item.id)) {
                 continue
             }
-
-            val cachedPhoto = PendingImageStore.readBytes(item.imageCachePath)
-            val result = if (cachedPhoto != null) {
-                TelegramApi.sendPhotoWithText(
-                    botToken = settings.botToken,
-                    chatId = targetChatId,
-                    photoBytes = cachedPhoto,
-                    text = item.formattedMessage
-                )
-            } else {
-                TelegramApi.sendMessage(
-                    botToken = settings.botToken,
-                    chatId = targetChatId,
-                    text = item.formattedMessage
-                )
-            }
-
-            if (result.success) {
-                repo.updateLogStatus(
-                    id = item.id,
-                    status = DeliveryStatus.SENT,
-                    errorMessage = null,
-                    incrementSentToday = true,
-                    incrementRetryCount = false,
-                    clearImageCache = true
-                )
-            } else if (result.retryable) {
-                val nextCount = item.retryCount + 1
-                if (nextCount >= MAX_RETRY_COUNT) {
+            try {
+                val targetChatId = item.chatId.ifBlank { settings.chatId }
+                if (targetChatId.isBlank()) {
                     repo.updateLogStatus(
                         id = item.id,
                         status = DeliveryStatus.FAILED,
-                        errorMessage = "${result.message} (재시도 한도 초과)",
+                        errorMessage = "Chat ID가 설정되지 않았습니다.",
                         incrementSentToday = false,
-                        incrementRetryCount = true
+                        incrementRetryCount = false
                     )
+                    continue
+                }
+
+                val cachedPhoto = PendingImageStore.readBytes(item.imageCachePath)
+                val result = if (cachedPhoto != null) {
+                    TelegramApi.sendPhotoWithText(
+                        botToken = settings.botToken,
+                        chatId = targetChatId,
+                        photoBytes = cachedPhoto,
+                        text = item.formattedMessage
+                    )
+                } else {
+                    TelegramApi.sendMessage(
+                        botToken = settings.botToken,
+                        chatId = targetChatId,
+                        text = item.formattedMessage
+                    )
+                }
+
+                if (result.success) {
+                    repo.updateLogStatus(
+                        id = item.id,
+                        status = DeliveryStatus.SENT,
+                        errorMessage = null,
+                        incrementSentToday = true,
+                        incrementRetryCount = false,
+                        clearImageCache = true
+                    )
+                } else if (result.retryable) {
+                    val nextCount = item.retryCount + 1
+                    if (nextCount >= MAX_RETRY_COUNT) {
+                        repo.updateLogStatus(
+                            id = item.id,
+                            status = DeliveryStatus.FAILED,
+                            errorMessage = "${result.message} (재시도 한도 초과)",
+                            incrementSentToday = false,
+                            incrementRetryCount = true
+                        )
+                    } else {
+                        repo.updateLogStatus(
+                            id = item.id,
+                            status = DeliveryStatus.PENDING_RETRY,
+                            errorMessage = result.message,
+                            incrementSentToday = false,
+                            incrementRetryCount = true
+                        )
+                        needsRetry = true
+                    }
                 } else {
                     repo.updateLogStatus(
                         id = item.id,
-                        status = DeliveryStatus.PENDING_RETRY,
+                        status = DeliveryStatus.FAILED,
                         errorMessage = result.message,
                         incrementSentToday = false,
-                        incrementRetryCount = true
+                        incrementRetryCount = false
                     )
-                    needsRetry = true
                 }
-            } else {
-                repo.updateLogStatus(
-                    id = item.id,
-                    status = DeliveryStatus.FAILED,
-                    errorMessage = result.message,
-                    incrementSentToday = false,
-                    incrementRetryCount = false
-                )
+            } finally {
+                repo.releaseLogDeliveryClaim(item.id)
             }
         }
 
@@ -117,7 +124,7 @@ class RetryDeliveryWorker(
                 .build()
 
             WorkManager.getInstance(context.applicationContext)
-                .enqueueUniqueWork(WORK_NAME, ExistingWorkPolicy.KEEP, request)
+                .enqueueUniqueWork(WORK_NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
         }
     }
 }

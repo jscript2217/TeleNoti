@@ -1,6 +1,7 @@
 package com.example.telegramalramrelay
 
 import com.example.telegramalramrelay.data.AppCustomRule
+import com.example.telegramalramrelay.data.DeliveryClaimRegistry
 import com.example.telegramalramrelay.data.DeliveryStatus
 import com.example.telegramalramrelay.data.NotificationLogItem
 import com.example.telegramalramrelay.data.SettingsRepository
@@ -192,5 +193,23 @@ class ModelsAndApiParserTest {
         val serverErrParsed = TelegramApi.parseEditMessageResponse(502, serverErrResp, fallbackMessageId = 555L)
         assertFalse(serverErrParsed.success)
         assertTrue(serverErrParsed.retryable)
+    }
+
+    @Test
+    fun deliveryClaimRegistryPreventsConcurrentDuplicateClaims() {
+        val registry = DeliveryClaimRegistry()
+
+        assertTrue(registry.tryClaim("log-1"))
+        assertTrue(registry.isClaimed("log-1"))
+        assertFalse(registry.tryClaim("log-1"))
+
+        assertFalse(registry.tryClaim("sent-log", isEligible = false))
+        assertFalse(registry.isClaimed("sent-log"))
+
+        assertFalse(registry.tryClaim("   "))
+
+        registry.release("log-1")
+        assertFalse(registry.isClaimed("log-1"))
+        assertTrue(registry.tryClaim("log-1"))
     }
 }

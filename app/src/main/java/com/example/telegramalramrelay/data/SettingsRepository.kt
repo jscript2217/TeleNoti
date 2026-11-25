@@ -13,12 +13,36 @@ import java.util.Calendar
 import java.util.TimeZone
 import java.util.UUID
 
+/**
+ * Coordinates in-flight log delivery claims across notification/call dispatchers
+ * and background RetryDeliveryWorker so no pending log entry is sent twice concurrently.
+ */
+class DeliveryClaimRegistry {
+    private val lock = Any()
+    private val claimedIds = HashSet<String>()
+
+    fun tryClaim(id: String, isEligible: Boolean = true): Boolean = synchronized(lock) {
+        if (!isEligible || id.isBlank()) return@synchronized false
+        claimedIds.add(id)
+    }
+
+    fun release(id: String) = synchronized(lock) {
+        claimedIds.remove(id)
+        Unit
+    }
+
+    fun isClaimed(id: String): Boolean = synchronized(lock) {
+        claimedIds.contains(id)
+    }
+}
+
 class SettingsRepository private constructor(context: Context) {
     private val appContext = context.applicationContext
     private val prefs: SharedPreferences =
         appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val tokenStore = SecureTokenStore(appContext)
     private val lock = Any()
+    private val deliveryClaims = DeliveryClaimRegistry()
 
     private val _settings: MutableStateFlow<TeleNotiSettings>
     val settings: StateFlow<TeleNotiSettings>
@@ -315,8 +339,11 @@ class SettingsRepository private constructor(context: Context) {
         }
     }
 
-    fun addLogItem(item: NotificationLogItem) {
+    fun addLogItem(item: NotificationLogItem, claimImmediately: Boolean = false) {
         synchronized(lock) {
+            if (claimImmediately) {
+                deliveryClaims.tryClaim(item.id, isEligible = true)
+            }
             val updated = listOf(item) + _settings.value.recentNotifications
             val capped = updated.take(MAX_RECENT_LOGS)
             prefs.edit()
@@ -392,10 +419,21 @@ class SettingsRepository private constructor(context: Context) {
         }
     }
 
+    fun tryClaimLogForDelivery(id: String): Boolean = synchronized(lock) {
+        val isPendingRetry = _settings.value.recentNotifications
+            .firstOrNull { it.id == id }
+            ?.status == DeliveryStatus.PENDING_RETRY
+        deliveryClaims.tryClaim(id, isEligible = isPendingRetry)
+    }
+
+    fun releaseLogDeliveryClaim(id: String) {
+        deliveryClaims.release(id)
+    }
+
     fun getPendingRetryItems(): List<NotificationLogItem> {
         synchronized(lock) {
             return _settings.value.recentNotifications
-                .filter { it.status == DeliveryStatus.PENDING_RETRY }
+                .filter { it.status == DeliveryStatus.PENDING_RETRY && !deliveryClaims.isClaimed(it.id) }
                 .asReversed()
         }
     }

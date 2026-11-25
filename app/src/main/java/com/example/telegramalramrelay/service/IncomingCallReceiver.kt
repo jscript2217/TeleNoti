@@ -37,7 +37,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -49,8 +48,10 @@ import java.util.concurrent.atomic.AtomicReference
 
 object IncomingCallDispatcher {
     private const val TAG = "IncomingCallDispatcher"
-    private const val WAIT_FOR_NUMBER_DELAY_MS = 3_000L
-    private const val DELIVERY_TIMEOUT_MS = 5_500L
+    private const val WAIT_FOR_NUMBER_DELAY_MS = 4_500L
+    private const val GO_ASYNC_MAX_HOLD_MS = 8_500L
+    private const val HTTP_CONNECT_TIMEOUT_MS = 8_000
+    private const val HTTP_READ_TIMEOUT_MS = 8_000
 
     private data class PreparedCallAlert(
         val title: String,
@@ -94,6 +95,14 @@ object IncomingCallDispatcher {
         val nowMillis = System.currentTimeMillis()
         val rawLength = rawNumber?.length ?: 0
         val normalizedLength = IncomingCallFormatter.normalizeForKey(rawNumber).length
+        val releaseWatchdog = scope.launch {
+            delay(GO_ASYNC_MAX_HOLD_MS)
+            finishOnce()
+        }
+        val finishAndCancelWatchdog: () -> Unit = {
+            releaseWatchdog.cancel()
+            finishOnce()
+        }
 
         when (val decision = tracker.onRinging(hasNumberExtra, rawNumber, hasCallLog, nowMillis)) {
             CallEventDecision.Ignore -> {
@@ -101,7 +110,7 @@ object IncomingCallDispatcher {
                     TAG,
                     "onRinging: hasExtra=$hasNumberExtra rawLen=$rawLength normLen=$normalizedLength decision=Ignore"
                 )
-                finishOnce()
+                finishAndCancelWatchdog()
             }
 
             is CallEventDecision.WaitForNumber -> {
@@ -111,11 +120,11 @@ object IncomingCallDispatcher {
                 )
                 synchronized(waitLock) {
                     if (pendingWaitJob?.isActive == true && pendingWaitSessionId == decision.sessionId) {
-                        finishOnce()
+                        finishAndCancelWatchdog()
                         return
                     }
                     cancelPendingWaitLocked()
-                    pendingWaitFinish = finishOnce
+                    pendingWaitFinish = finishAndCancelWatchdog
                     pendingWaitSessionId = decision.sessionId
                     var jobRef: Job? = null
                     val job = scope.launch(start = CoroutineStart.LAZY) {
@@ -146,7 +155,7 @@ object IncomingCallDispatcher {
                                     pendingWaitFinish = null
                                 }
                             }
-                            finishOnce()
+                            finishAndCancelWatchdog()
                         }
                     }
                     jobRef = job
@@ -187,7 +196,7 @@ object IncomingCallDispatcher {
                             }
                         }
                     } finally {
-                        finishOnce()
+                        finishAndCancelWatchdog()
                     }
                 }
             }
@@ -199,7 +208,6 @@ object IncomingCallDispatcher {
             cancelPendingWaitLocked()
         }
         tracker.onOffhook()
-        activeFallbackRecord.set(null)
     }
 
     fun onIdle() {
@@ -343,27 +351,31 @@ object IncomingCallDispatcher {
                 emoji = "📞",
                 recipientLabel = if (showRecipientLabel) recipient.label else null
             )
-            repo.addLogItem(logItem)
+            repo.addLogItem(logItem, claimImmediately = true)
             recipient to logId
         }
 
         val messageIdsByLogId = ConcurrentHashMap<String, Long>()
-        val retryFlags = withTimeoutOrNull(DELIVERY_TIMEOUT_MS) {
-            coroutineScope {
-                entries.map { (recipient, logId) ->
-                    async {
+        val retryFlags = coroutineScope {
+            entries.map { (recipient, logId) ->
+                async {
+                    try {
                         val result = TelegramApi.sendMessage(
                             botToken = settings.botToken,
                             chatId = recipient.chatId,
-                            text = alert.message
+                            text = alert.message,
+                            connectTimeoutMs = HTTP_CONNECT_TIMEOUT_MS,
+                            readTimeoutMs = HTTP_READ_TIMEOUT_MS
                         )
                         result.messageId?.takeIf { it > 0L }?.let { msgId ->
                             messageIdsByLogId[logId] = msgId
                         }
                         recordTelegramSendOutcome(repo, logId, result)
+                    } finally {
+                        repo.releaseLogDeliveryClaim(logId)
                     }
-                }.awaitAll()
-            }
+                }
+            }.awaitAll()
         }
 
         if (recordAsFallback) {
@@ -379,8 +391,6 @@ object IncomingCallDispatcher {
 
         finalizeRetryScheduling(
             appCtx = appCtx,
-            repo = repo,
-            logIds = entries.map { it.second },
             retryFlags = retryFlags
         )
     }
@@ -404,23 +414,28 @@ object IncomingCallDispatcher {
             hasCallLogPermission = hasCallLogPermission
         )
 
-        val retryFlags = withTimeoutOrNull(DELIVERY_TIMEOUT_MS) {
-            coroutineScope {
-                fallbackRecord.targets.map { target ->
-                    async {
-                        var alreadyHandled = false
-                        if (target.messageId != null && target.messageId > 0L) {
-                            val editResult = TelegramApi.editMessageText(
+        val retryFlags = coroutineScope {
+            fallbackRecord.targets.map { target ->
+                async {
+                    if (target.messageId != null && target.messageId > 0L) {
+                        var editResult = TelegramApi.editMessageText(
+                            botToken = settings.botToken,
+                            chatId = target.chatId,
+                            messageId = target.messageId,
+                            text = alert.message,
+                            connectTimeoutMs = HTTP_CONNECT_TIMEOUT_MS,
+                            readTimeoutMs = HTTP_READ_TIMEOUT_MS
+                        )
+                        if (!editResult.success && editResult.retryable) {
+                            delay(1_000L)
+                            editResult = TelegramApi.editMessageText(
                                 botToken = settings.botToken,
                                 chatId = target.chatId,
                                 messageId = target.messageId,
-                                text = alert.message
+                                text = alert.message,
+                                connectTimeoutMs = HTTP_CONNECT_TIMEOUT_MS,
+                                readTimeoutMs = HTTP_READ_TIMEOUT_MS
                             )
-                            alreadyHandled = editResult.success
-                        } else {
-                            val existing = repo.currentSettings().recentNotifications
-                                .firstOrNull { it.id == target.logId }
-                            alreadyHandled = existing?.status == DeliveryStatus.SENT
                         }
 
                         repo.updateLogContent(
@@ -429,60 +444,57 @@ object IncomingCallDispatcher {
                             text = alert.text,
                             formattedMessage = alert.message
                         )
-                        if (alreadyHandled) {
+                        if (editResult.success || editResult.retryable) {
                             false
                         } else {
                             val sendResult = TelegramApi.sendMessage(
                                 botToken = settings.botToken,
                                 chatId = target.chatId,
-                                text = alert.message
+                                text = alert.message,
+                                connectTimeoutMs = HTTP_CONNECT_TIMEOUT_MS,
+                                readTimeoutMs = HTTP_READ_TIMEOUT_MS
                             )
                             recordTelegramSendOutcome(repo, target.logId, sendResult)
                         }
+                    } else {
+                        repo.updateLogContent(
+                            id = target.logId,
+                            title = alert.title,
+                            text = alert.text,
+                            formattedMessage = alert.message
+                        )
+                        if (!repo.tryClaimLogForDelivery(target.logId)) {
+                            false
+                        } else {
+                            try {
+                                val sendResult = TelegramApi.sendMessage(
+                                    botToken = settings.botToken,
+                                    chatId = target.chatId,
+                                    text = alert.message,
+                                    connectTimeoutMs = HTTP_CONNECT_TIMEOUT_MS,
+                                    readTimeoutMs = HTTP_READ_TIMEOUT_MS
+                                )
+                                recordTelegramSendOutcome(repo, target.logId, sendResult)
+                            } finally {
+                                repo.releaseLogDeliveryClaim(target.logId)
+                            }
+                        }
                     }
-                }.awaitAll()
-            }
+                }
+            }.awaitAll()
         }
 
-        if (retryFlags == null) {
-            fallbackRecord.targets.forEach { target ->
-                repo.updateLogContent(
-                    id = target.logId,
-                    title = alert.title,
-                    text = alert.text,
-                    formattedMessage = alert.message
-                )
-            }
-        }
         finalizeRetryScheduling(
             appCtx = appCtx,
-            repo = repo,
-            logIds = fallbackRecord.targets.map { it.logId },
             retryFlags = retryFlags
         )
     }
 
     private fun finalizeRetryScheduling(
         appCtx: Context,
-        repo: SettingsRepository,
-        logIds: List<String>,
-        retryFlags: List<Boolean>?
+        retryFlags: List<Boolean>
     ) {
-        if (retryFlags == null) {
-            val snapshotById = repo.currentSettings().recentNotifications.associateBy { it.id }
-            logIds.forEach { logId ->
-                if (snapshotById[logId]?.status == DeliveryStatus.PENDING_RETRY) {
-                    repo.updateLogStatus(
-                        id = logId,
-                        status = DeliveryStatus.PENDING_RETRY,
-                        errorMessage = "전송 시간 초과 (백그라운드 재시도 대기)",
-                        incrementSentToday = false,
-                        incrementRetryCount = false
-                    )
-                }
-            }
-            RetryDeliveryWorker.enqueue(appCtx)
-        } else if (retryFlags.any { it }) {
+        if (retryFlags.any { it }) {
             RetryDeliveryWorker.enqueue(appCtx)
         }
     }
