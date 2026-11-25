@@ -1,7 +1,7 @@
 # TeleNoti (v2.5.0)
 
 [![Android](https://img.shields.io/badge/Android-7.0%2B%20(API%2024%2B)-3DDC84?logo=android&logoColor=white)](https://github.com/jscript2217/TeleNoti)
-[![One UI 7](https://img.shields.io/badge/Target-Android%2015%20%C2%B7%20One%20UI%207%20(Galaxy%20S21)-1428A0)](https://github.com/jscript2217/TeleNoti)
+[![Android 15](https://img.shields.io/badge/Target-Android%2015%20(API%2035)-1428A0)](https://github.com/jscript2217/TeleNoti)
 [![Latest Release](https://img.shields.io/github/v/release/jscript2217/TeleNoti?label=Release&color=0088CC)](https://github.com/jscript2217/TeleNoti/releases/latest)
 
 **TeleNoti(텔레노티)** 는 안드로이드 스마트폰에 도착하는 **앱 알림·긴 문자(LMS/MMS)·첨부 이미지·수신 전화**를 내 **텔레그램 봇**으로 실시간 전달해 주고, 텔레그램에서 **카톡·문자 바로 답장**까지 보낼 수 있는 안드로이드 전용 알림 중계 앱입니다.
@@ -10,7 +10,7 @@
 > 기존 TeleNoti(`com.example.telegramalramrelay`)가 이미 설치되어 있다면 삭제하지 않고 **그대로 덮어쓰기 업데이트**해도 봇 토큰·Chat ID·프로필·선택한 앱 목록이 그대로 유지됩니다.
 
 ### 이런 분께 특히 편합니다
-- 서브폰이나 집에 둔 공기계(갤럭시 S21 등)에 오는 **문자·카톡·전화 알림을 메인폰/아이폰/PC 텔레그램으로 한곳에서 받아보고 싶은 분**
+- 서브폰이나 집에 둔 안드로이드 폰에 오는 **문자·카톡·전화 알림을 메인폰/아이폰/PC 텔레그램으로 한곳에서 받아보고 싶은 분**
 - 업무 중 휴대폰을 들지 않고 **PC 텔레그램에서 카톡·문자에 바로 답장**하고 싶은 분
 - 부재중으로 남기 전에 **전화가 울리는 순간 발신자 이름과 번호를 바로 알고 싶은 분**
 
@@ -145,7 +145,7 @@
 
 ### ⑤ 가이드 (`가이드` 탭) & 권한 설정 도우미
 
-- **1. 처음 시작하기 (4단계)** · **2. 갤럭시 S21 · One UI 7 (Android 15) 필수 설정** · **3. 긴 문자/이미지 안내** · **4. 자주 묻는 질문(FAQ)** 을 앱 안에서 바로 확인할 수 있습니다.
+- **1. 처음 시작하기 (4단계)** · **2. Android 13~15 · 갤럭시(One UI) 필수 설정** · **3. 긴 문자/이미지 안내** · **4. 자주 묻는 질문(FAQ)** 을 앱 안에서 바로 확인할 수 있습니다.
 - **5. 현재 앱 상태 진단**: 앱 버전, Android OS 버전, 알림 표시/알림 접근/배터리 예외/SMS/수신 전화 권한 허용 여부와 리스너·상주 서비스 작동 상태를 한눈에 진단합니다.
 
 #### 권한 설정 도우미 (1~6단계 체크리스트)
@@ -172,7 +172,7 @@
 3. 방금 만든 내 봇 채팅방(`t.me/내봇아이디`)으로 들어가 **`시작(/start)`** 버튼을 한 번 누릅니다. *(그룹방·채널로 받으려면 해당 방에 봇을 초대한 뒤 메시지를 1번 보내세요.)*
 4. TeleNoti **`설정`** 탭 -> `Bot Token` 붙여넣기 -> **`Chat ID 자동 가져오기`** 클릭 -> 내 방 선택 -> **`저장`** 후 **`테스트 메시지`** 로 도착을 확인합니다.
 
-### 2단계. 갤럭시 S21 · One UI 7 (Android 15) 필수 설정 2가지
+### 2단계. Android 13~15 · 갤럭시(One UI) 필수 설정 2가지
 1. **「제한된 설정」 때문에 알림 접근 / 전화 권한이 막힐 때**
    - Play 스토어가 아닌 APK 파일로 직접 설치하면 Android 13~15 보안 정책상 처음에 스위치가 회색으로 잠길 수 있습니다.
    - **해결**: `권한 설정 도우미` 안의 **`앱 정보 열기`** 클릭 -> 우측 상단 **`⋮`** 메뉴 -> **`제한된 설정 허용`** 클릭 -> 다시 돌아와 알림 접근 및 권한을 켜면 바로 허용됩니다.
@@ -203,7 +203,7 @@
 
 `v*` 태그를 푸시하거나 GitHub **Actions -> Release APK -> Run workflow**를 수동 실행하면 자동으로 유닛 테스트(`testDebugUnitTest`) 통과 후 APK와 `SHA256SUMS.txt`를 GitHub Releases에 업로드합니다.
 
-#### GitHub Secrets 4종 등록 (기존 S21 앱 업데이트 서명 유지용)
+#### GitHub Secrets 4종 등록 (기존 앱 업데이트 서명 유지용)
 PowerShell에서 로컬 키스토어(`jks\dddd`)를 Base64로 클립보드에 복사합니다:
 
 ```powershell

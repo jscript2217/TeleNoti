@@ -168,7 +168,7 @@ fun GuideScreen(
             }
         }
 
-        // Section 2: Galaxy S21 / One UI 7 (Android 15) Complete Guide + Action Shortcuts
+        // Section 2: Android 13~15 / Samsung One UI Complete Guide + Action Shortcuts
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp),
@@ -179,7 +179,7 @@ fun GuideScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = "2. 갤럭시 S21 · One UI 7 (Android 15) 필수 설정",
+                    text = "2. Android 13~15 · 갤럭시(One UI) 필수 설정",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSecondaryContainer
