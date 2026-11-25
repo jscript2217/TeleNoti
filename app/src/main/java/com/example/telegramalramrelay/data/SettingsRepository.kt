@@ -363,6 +363,35 @@ class SettingsRepository private constructor(context: Context) {
         }
     }
 
+    fun updateLogContent(
+        id: String,
+        title: String,
+        text: String,
+        formattedMessage: String
+    ) {
+        synchronized(lock) {
+            val current = _settings.value
+            var changed = false
+            val updatedList = current.recentNotifications.map { item ->
+                if (item.id == id) {
+                    changed = true
+                    item.copy(
+                        title = title,
+                        text = text,
+                        formattedMessage = formattedMessage
+                    )
+                } else {
+                    item
+                }
+            }
+            if (!changed) return
+            prefs.edit()
+                .putString(KEY_RECENT_NOTIFICATIONS, NotificationLogItem.toJsonArrayString(updatedList))
+                .apply()
+            _settings.value = current.copy(recentNotifications = updatedList)
+        }
+    }
+
     fun getPendingRetryItems(): List<NotificationLogItem> {
         synchronized(lock) {
             return _settings.value.recentNotifications

@@ -26,6 +26,13 @@ class IncomingCallHandlerTest {
         assertEquals("+16505550199", IncomingCallFormatter.formatKoreanPhoneNumber("+1 (650) 555-0199"))
         assertEquals("", IncomingCallFormatter.formatKoreanPhoneNumber("   "))
         assertEquals("01012345678", IncomingCallFormatter.normalizeForKey("+82 10-1234-5678"))
+        assertEquals("01046698599", IncomingCallFormatter.normalizeForKey("tel:+821046698599"))
+        assertEquals("01046698599", IncomingCallFormatter.normalizeForKey("sip:01046698599@ims.kt.co.kr"))
+        assertEquals("112", IncomingCallFormatter.normalizeForKey("112"))
+        assertEquals("119", IncomingCallFormatter.normalizeForKey("119"))
+        listOf("Unknown", "Private", "Restricted", "-", "null", "-1", "-2", "12").forEach { placeholder ->
+            assertEquals("Expected blank key for $placeholder", "", IncomingCallFormatter.normalizeForKey(placeholder))
+        }
     }
 
     @Test
@@ -133,7 +140,7 @@ class IncomingCallHandlerTest {
 
         // 1. Android 9+ Broadcast #1 (no number, has READ_CALL_LOG) waits
         assertEquals(
-            CallEventDecision.WaitForNumber,
+            CallEventDecision.WaitForNumber(sessionId = 1L),
             tracker.onRinging(
                 hasNumberExtra = false,
                 rawNumber = null,
@@ -142,9 +149,9 @@ class IncomingCallHandlerTest {
             )
         )
 
-        // 2. Broadcast #2 (with number) triggers immediate send
+        // 2. Broadcast #2 (with number) triggers immediate send in same session
         assertEquals(
-            CallEventDecision.SendNow("010-1234-5678"),
+            CallEventDecision.SendNow("010-1234-5678", sessionId = 1L, isUpgradeFromFallback = false),
             tracker.onRinging(
                 hasNumberExtra = true,
                 rawNumber = "010-1234-5678",
@@ -173,10 +180,10 @@ class IncomingCallHandlerTest {
             )
         )
 
-        // 4. Answering call (OFFHOOK) + call waiting from a DIFFERENT number sends alert
+        // 4. Answering call (OFFHOOK) + call waiting from a DIFFERENT number sends alert in a new session
         tracker.onOffhook()
         assertEquals(
-            CallEventDecision.SendNow("010-9999-8888"),
+            CallEventDecision.SendNow("010-9999-8888", sessionId = 2L, isUpgradeFromFallback = false),
             tracker.onRinging(
                 hasNumberExtra = true,
                 rawNumber = "010-9999-8888",
@@ -188,7 +195,7 @@ class IncomingCallHandlerTest {
         // 5. IDLE resets session so same caller calling back right away alerts again
         tracker.onIdle()
         assertEquals(
-            CallEventDecision.WaitForNumber,
+            CallEventDecision.WaitForNumber(sessionId = 3L),
             tracker.onRinging(
                 hasNumberExtra = false,
                 rawNumber = null,
@@ -198,14 +205,14 @@ class IncomingCallHandlerTest {
         )
         // Fallback timeout sends when Broadcast #2 never arrives
         assertEquals(
-            CallEventDecision.SendNow(null),
+            CallEventDecision.SendNow(null, sessionId = 3L, isUpgradeFromFallback = false),
             tracker.onFallbackTimeout(nowMillis = 6_400L)
         )
 
         // 6. Without READ_CALL_LOG permission, RINGING sends immediately without waiting
         tracker.onIdle()
         assertEquals(
-            CallEventDecision.SendNow(null),
+            CallEventDecision.SendNow(null, sessionId = 4L, isUpgradeFromFallback = false),
             tracker.onRinging(
                 hasNumberExtra = false,
                 rawNumber = null,
@@ -218,7 +225,7 @@ class IncomingCallHandlerTest {
         // must wait instead of firing a duplicate "발신번호 표시 제한" alert before the real number arrives.
         tracker.onIdle()
         assertEquals(
-            CallEventDecision.WaitForNumber,
+            CallEventDecision.WaitForNumber(sessionId = 5L),
             tracker.onRinging(
                 hasNumberExtra = true,
                 rawNumber = null,
@@ -227,7 +234,7 @@ class IncomingCallHandlerTest {
             )
         )
         assertEquals(
-            CallEventDecision.WaitForNumber,
+            CallEventDecision.WaitForNumber(sessionId = 5L),
             tracker.onRinging(
                 hasNumberExtra = true,
                 rawNumber = "   ",
@@ -236,7 +243,7 @@ class IncomingCallHandlerTest {
             )
         )
         assertEquals(
-            CallEventDecision.SendNow("010-4669-8599"),
+            CallEventDecision.SendNow("010-4669-8599", sessionId = 5L, isUpgradeFromFallback = false),
             tracker.onRinging(
                 hasNumberExtra = true,
                 rawNumber = "010-4669-8599",
@@ -251,6 +258,105 @@ class IncomingCallHandlerTest {
                 rawNumber = "",
                 hasCallLogPermission = true,
                 nowMillis = 8_400L
+            )
+        )
+    }
+
+    @Test
+    fun `IncomingCallStateTracker waits on placeholder extras and flags delayed fallback upgrade`() {
+        val tracker = IncomingCallStateTracker(dedupeWindowMs = 15_000L)
+
+        // 1. Placeholder/sentinel extras (< 3 digits) wait in session 1 instead of firing immediate alert
+        listOf("Unknown", "Private", "-1", "12").forEachIndexed { idx, sentinel ->
+            assertEquals(
+                CallEventDecision.WaitForNumber(sessionId = 1L),
+                tracker.onRinging(
+                    hasNumberExtra = true,
+                    rawNumber = sentinel,
+                    hasCallLogPermission = true,
+                    nowMillis = 1_000L + idx * 20L
+                )
+            )
+        }
+        assertEquals(
+            CallEventDecision.SendNow("010-4669-8599", sessionId = 1L, isUpgradeFromFallback = false),
+            tracker.onRinging(
+                hasNumberExtra = true,
+                rawNumber = "010-4669-8599",
+                hasCallLogPermission = true,
+                nowMillis = 1_200L
+            )
+        )
+
+        // 2. Late Broadcast #2 after fallback timeout keeps same sessionId and marks isUpgradeFromFallback=true
+        tracker.onIdle()
+        assertEquals(
+            CallEventDecision.WaitForNumber(sessionId = 2L),
+            tracker.onRinging(
+                hasNumberExtra = true,
+                rawNumber = "Restricted",
+                hasCallLogPermission = true,
+                nowMillis = 10_000L
+            )
+        )
+        // Stale timeout targeting session 1 is ignored
+        assertEquals(
+            CallEventDecision.Ignore,
+            tracker.onFallbackTimeout(nowMillis = 13_000L, expectedSessionId = 1L)
+        )
+        // Active timeout fires fallback
+        assertEquals(
+            CallEventDecision.SendNow(null, sessionId = 2L, isUpgradeFromFallback = false),
+            tracker.onFallbackTimeout(nowMillis = 13_000L, expectedSessionId = 2L)
+        )
+        // Repeat withheld broadcast stays ignored while real number upgrades in-place
+        assertEquals(
+            CallEventDecision.Ignore,
+            tracker.onRinging(
+                hasNumberExtra = true,
+                rawNumber = "Unknown",
+                hasCallLogPermission = true,
+                nowMillis = 13_200L
+            )
+        )
+        assertEquals(
+            CallEventDecision.SendNow("010-4669-8599", sessionId = 2L, isUpgradeFromFallback = true),
+            tracker.onRinging(
+                hasNumberExtra = true,
+                rawNumber = "010-4669-8599",
+                hasCallLogPermission = true,
+                nowMillis = 13_500L
+            )
+        )
+        // Duplicate real-number or blank broadcasts after upgrade are suppressed
+        assertEquals(
+            CallEventDecision.Ignore,
+            tracker.onRinging(
+                hasNumberExtra = true,
+                rawNumber = "+82 10 4669 8599",
+                hasCallLogPermission = true,
+                nowMillis = 13_600L
+            )
+        )
+        assertEquals(
+            CallEventDecision.Ignore,
+            tracker.onRinging(
+                hasNumberExtra = true,
+                rawNumber = "",
+                hasCallLogPermission = true,
+                nowMillis = 13_700L
+            )
+        )
+
+        // 3. New call after IDLE starts fresh session without upgrade flag
+        tracker.onIdle()
+        assertEquals(
+            CallEventDecision.SendNow("010-4669-8599", sessionId = 3L, isUpgradeFromFallback = false),
+            tracker.onRinging(
+                hasNumberExtra = true,
+                rawNumber = "010-4669-8599",
+                hasCallLogPermission = true,
+                nowMillis = 14_000L
             )
         )
     }

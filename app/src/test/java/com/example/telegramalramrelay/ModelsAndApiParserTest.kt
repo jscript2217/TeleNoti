@@ -168,4 +168,29 @@ class ModelsAndApiParserTest {
 
         assertTrue(TelegramApi.parseChatsFromUpdatesJson("not json").isEmpty())
     }
+
+    @Test
+    fun parsesEditMessageResponsesCorrectly() {
+        val okResp = """{"ok":true,"result":{"message_id":777}}"""
+        val okParsed = TelegramApi.parseEditMessageResponse(200, okResp, fallbackMessageId = 555L)
+        assertTrue(okParsed.success)
+        assertEquals(777L, okParsed.messageId)
+        assertEquals(listOf(777L), okParsed.messageIds)
+
+        val notModifiedResp = """{"ok":false,"error_code":400,"description":"Bad Request: message is not modified: specified new message content and reply markup are exactly the same"}"""
+        val notModifiedParsed = TelegramApi.parseEditMessageResponse(400, notModifiedResp, fallbackMessageId = 555L)
+        assertTrue(notModifiedParsed.success)
+        assertFalse(notModifiedParsed.retryable)
+        assertEquals(555L, notModifiedParsed.messageId)
+
+        val badRequestResp = """{"ok":false,"error_code":400,"description":"Bad Request: message to edit not found"}"""
+        val badRequestParsed = TelegramApi.parseEditMessageResponse(400, badRequestResp, fallbackMessageId = 555L)
+        assertFalse(badRequestParsed.success)
+        assertFalse(badRequestParsed.retryable)
+
+        val serverErrResp = """{"ok":false,"error_code":502,"description":"Bad Gateway"}"""
+        val serverErrParsed = TelegramApi.parseEditMessageResponse(502, serverErrResp, fallbackMessageId = 555L)
+        assertFalse(serverErrParsed.success)
+        assertTrue(serverErrParsed.retryable)
+    }
 }

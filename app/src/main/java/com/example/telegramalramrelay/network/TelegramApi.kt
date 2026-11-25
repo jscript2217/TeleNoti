@@ -99,6 +99,53 @@ object TelegramApi {
         )
     }
 
+    suspend fun editMessageText(
+        botToken: String,
+        chatId: String,
+        messageId: Long,
+        text: String,
+        parseMode: String? = null
+    ): TelegramResult = withContext(Dispatchers.IO) {
+        val validationError = validateCredentials(botToken, chatId)
+        if (validationError != null) return@withContext validationError
+        if (messageId <= 0L) {
+            return@withContext TelegramResult(
+                success = false,
+                message = "수정할 Telegram message_id가 유효하지 않습니다.",
+                retryable = false
+            )
+        }
+
+        val cleanToken = botToken.trim()
+        val cleanChatId = chatId.trim()
+        val url = try {
+            URL("https://api.telegram.org/bot$cleanToken/editMessageText")
+        } catch (_: Exception) {
+            return@withContext TelegramResult(
+                success = false,
+                message = "봇 토큰 URL 생성 실패",
+                retryable = false
+            )
+        }
+
+        val payload = JSONObject().apply {
+            put("chat_id", cleanChatId)
+            put("message_id", messageId)
+            put("text", text.take(4096))
+            if (!parseMode.isNullOrBlank()) {
+                put("parse_mode", parseMode)
+            }
+        }.toString()
+
+        executePost(
+            url = url,
+            contentType = "application/json; charset=UTF-8",
+            bodyBytes = payload.toByteArray(Charsets.UTF_8)
+        ) { code, resp ->
+            parseEditMessageResponse(code, resp, fallbackMessageId = messageId)
+        }
+    }
+
     suspend fun sendPhoto(
         botToken: String,
         chatId: String,
@@ -539,7 +586,8 @@ object TelegramApi {
         contentType: String,
         bodyBytes: ByteArray,
         connectTimeoutMs: Int = 15000,
-        readTimeoutMs: Int = 15000
+        readTimeoutMs: Int = 15000,
+        responseParser: (Int, String) -> TelegramResult = ::parseTelegramResponse
     ): TelegramResult {
         var conn: HttpURLConnection? = null
         return try {
@@ -558,7 +606,7 @@ object TelegramApi {
 
             val code = conn.responseCode
             val resp = readResponseBody(conn, code)
-            parseTelegramResponse(code, resp)
+            responseParser(code, resp)
         } catch (e: IOException) {
             TelegramResult(
                 success = false,
@@ -621,6 +669,39 @@ object TelegramApi {
             httpCode = code,
             retryable = retryable,
             retryAfterSeconds = retryAfter
+        )
+    }
+
+    internal fun parseEditMessageResponse(
+        code: Int,
+        resp: String,
+        fallbackMessageId: Long
+    ): TelegramResult {
+        val json = try {
+            if (resp.isNotBlank()) JSONObject(resp) else null
+        } catch (_: Exception) {
+            null
+        }
+        val desc = json?.optString("description").orEmpty()
+        if (code == 400 && desc.contains("message is not modified", ignoreCase = true)) {
+            val resolvedId = fallbackMessageId.takeIf { it > 0L }
+            return TelegramResult(
+                success = true,
+                message = "메시지 수정 성공",
+                httpCode = code,
+                retryable = false,
+                messageId = resolvedId,
+                messageIds = listOfNotNull(resolvedId)
+            )
+        }
+
+        val base = parseTelegramResponse(code, resp)
+        if (!base.success) return base
+        val resolvedId = base.messageId ?: fallbackMessageId.takeIf { it > 0L }
+        return base.copy(
+            message = "메시지 수정 성공",
+            messageId = resolvedId,
+            messageIds = if (base.messageIds.isNotEmpty()) base.messageIds else listOfNotNull(resolvedId)
         )
     }
 

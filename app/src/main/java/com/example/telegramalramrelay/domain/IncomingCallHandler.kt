@@ -7,20 +7,33 @@ const val INCOMING_CALL_PACKAGE = "com.example.telegramalramrelay.incoming_call"
 object IncomingCallFormatter {
     /**
      * Normalizes a raw phone number string into a canonical key for deduplication
-     * and Korean number formatting. Converts Korean `+82` prefixes (followed by 1..8)
-     * into `0...`, preserves non-KR international `+<digits>`, and returns `""` when blank.
+     * and Korean number formatting. Strips optional `tel:`/`sip:` URI schemes and
+     * `@domain` suffixes, converts Korean `+82` prefixes (followed by 1..8) into `0...`,
+     * preserves non-KR international `+<digits>`, and returns `""` for blanks,
+     * non-digit placeholders (`Unknown`, `Private`, etc.), or sentinels with < 3 digits.
      */
     fun normalizeForKey(raw: String?): String {
         val trimmed = raw?.trim().orEmpty()
         if (trimmed.isEmpty()) return ""
 
-        val hasPlus = trimmed.startsWith("+")
-        val digits = buildString(trimmed.length) {
-            for (ch in trimmed) {
-                if (ch.isDigit()) append(ch)
+        var candidate = trimmed
+        if (candidate.startsWith("tel:", ignoreCase = true) ||
+            candidate.startsWith("sip:", ignoreCase = true)
+        ) {
+            candidate = candidate.substring(4).trim()
+        }
+        val atIdx = candidate.indexOf('@')
+        if (atIdx >= 0) {
+            candidate = candidate.substring(0, atIdx).trim()
+        }
+
+        val hasPlus = candidate.startsWith("+")
+        val digits = buildString(candidate.length) {
+            for (ch in candidate) {
+                if (ch in '0'..'9') append(ch)
             }
         }
-        if (digits.isEmpty()) return ""
+        if (digits.length < 3) return ""
 
         if (hasPlus) {
             if (digits.startsWith("82") && digits.length >= 4 && digits[2] in '1'..'8') {
@@ -118,22 +131,30 @@ object IncomingCallPolicy {
 }
 
 sealed interface CallEventDecision {
-    data class SendNow(val rawNumber: String?) : CallEventDecision
-    data object WaitForNumber : CallEventDecision
+    data class SendNow(
+        val rawNumber: String?,
+        val sessionId: Long = 0L,
+        val isUpgradeFromFallback: Boolean = false
+    ) : CallEventDecision
+
+    data class WaitForNumber(val sessionId: Long = 0L) : CallEventDecision
     data object Ignore : CallEventDecision
 }
 
 /**
  * Coordinates Android 9+ dual `PHONE_STATE` RINGING broadcasts (broadcast #1 without
- * `EXTRA_INCOMING_NUMBER` when `READ_CALL_LOG` is granted, followed immediately by #2 with
- * the number) and prevents duplicate Telegram alerts during the same ringing session.
+ * `EXTRA_INCOMING_NUMBER` or with non-digit placeholder extras when `READ_CALL_LOG` is granted,
+ * followed by #2 with the number), and tracks per-ring session IDs so delayed numbers can
+ * upgrade a fallback alert in-place instead of sending a duplicate notification.
  */
 class IncomingCallStateTracker(
     private val dedupeWindowMs: Long = 15_000L
 ) {
     private val lock = Any()
+    private var currentSessionId = 0L
     private var isRingingSessionActive = false
     private var awaitingNumber = false
+    private var fallbackSentForSession = false
     private var lastNotifiedNormalized = ""
     private var lastNotifiedAtMillis = 0L
 
@@ -143,24 +164,33 @@ class IncomingCallStateTracker(
         hasCallLogPermission: Boolean,
         nowMillis: Long
     ): CallEventDecision = synchronized(lock) {
-        val cleanNumber = rawNumber?.trim()?.takeIf { it.isNotEmpty() }
-        if (cleanNumber == null) {
+        val normalized = IncomingCallFormatter.normalizeForKey(rawNumber)
+        if (normalized.isEmpty()) {
             if (isRingingSessionActive && (nowMillis - lastNotifiedAtMillis) in 0 until dedupeWindowMs) {
                 return CallEventDecision.Ignore
             }
             if (hasCallLogPermission) {
+                if (!awaitingNumber) {
+                    currentSessionId++
+                }
                 awaitingNumber = true
-                return CallEventDecision.WaitForNumber
+                return CallEventDecision.WaitForNumber(currentSessionId)
             }
+            currentSessionId++
             awaitingNumber = false
+            fallbackSentForSession = false
             isRingingSessionActive = true
             lastNotifiedNormalized = ""
             lastNotifiedAtMillis = nowMillis
-            return CallEventDecision.SendNow(null)
+            return CallEventDecision.SendNow(
+                rawNumber = null,
+                sessionId = currentSessionId,
+                isUpgradeFromFallback = false
+            )
         }
 
-        val normalized = IncomingCallFormatter.normalizeForKey(cleanNumber)
         if (isRingingSessionActive &&
+            !fallbackSentForSession &&
             normalized == lastNotifiedNormalized &&
             (nowMillis - lastNotifiedAtMillis) in 0 until dedupeWindowMs
         ) {
@@ -168,15 +198,32 @@ class IncomingCallStateTracker(
             return CallEventDecision.Ignore
         }
 
+        val upgradingFallback = isRingingSessionActive &&
+            fallbackSentForSession &&
+            (nowMillis - lastNotifiedAtMillis) in 0 until dedupeWindowMs
+        if (!upgradingFallback && !awaitingNumber) {
+            currentSessionId++
+        }
         awaitingNumber = false
+        fallbackSentForSession = false
         isRingingSessionActive = true
         lastNotifiedNormalized = normalized
         lastNotifiedAtMillis = nowMillis
-        return CallEventDecision.SendNow(cleanNumber)
+        return CallEventDecision.SendNow(
+            rawNumber = rawNumber?.trim(),
+            sessionId = currentSessionId,
+            isUpgradeFromFallback = upgradingFallback
+        )
     }
 
-    fun onFallbackTimeout(nowMillis: Long): CallEventDecision = synchronized(lock) {
+    fun onFallbackTimeout(
+        nowMillis: Long,
+        expectedSessionId: Long? = null
+    ): CallEventDecision = synchronized(lock) {
         if (!awaitingNumber) {
+            return CallEventDecision.Ignore
+        }
+        if (expectedSessionId != null && expectedSessionId != currentSessionId) {
             return CallEventDecision.Ignore
         }
         if (isRingingSessionActive && (nowMillis - lastNotifiedAtMillis) in 0 until dedupeWindowMs) {
@@ -185,18 +232,25 @@ class IncomingCallStateTracker(
         }
         awaitingNumber = false
         isRingingSessionActive = true
+        fallbackSentForSession = true
         lastNotifiedNormalized = ""
         lastNotifiedAtMillis = nowMillis
-        return CallEventDecision.SendNow(null)
+        return CallEventDecision.SendNow(
+            rawNumber = null,
+            sessionId = currentSessionId,
+            isUpgradeFromFallback = false
+        )
     }
 
     fun onOffhook() = synchronized(lock) {
         awaitingNumber = false
+        fallbackSentForSession = false
     }
 
     fun onIdle() = synchronized(lock) {
         awaitingNumber = false
         isRingingSessionActive = false
+        fallbackSentForSession = false
         lastNotifiedNormalized = ""
         lastNotifiedAtMillis = 0L
     }
